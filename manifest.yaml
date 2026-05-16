@@ -42,6 +42,37 @@ nodes:
         invocation_mode: fire_and_forget
         schema: shared/schemas/permissive.json
 
+  - id: voice
+    kind: interface
+    runtime: native
+    identity_secret: env:VOICE_SECRET
+    metadata:
+      description: "gpt-realtime-2 voice node. Mic + speakers on Mac mini. Manual start_session via inspector at http://localhost:8807."
+      host: mac-mini
+    surfaces:
+      # Tool surfaces (callable, request_response).
+      - name: start_session
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: stop_session
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: session_status
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      # Inbox surfaces (fire_and_forget). speak=verbatim, tell=conversational.
+      - name: speak
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
+      - name: tell
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
+
 relationships:
   # Inbound to RAVEN portal.
   - from: control
@@ -88,3 +119,42 @@ relationships:
     to: core.reconcile
   - from: raven
     to: core.drain
+
+  # Voice node — outbound to peer inboxes (gpt-realtime-2 model can call
+  # these as Realtime function tools while a session is live).
+  - from: voice
+    to: raven.message
+  - from: voice
+    to: edith.chat
+  - from: voice
+    to: control.message
+
+  # Peers can push lines into the voice surface.
+  # speak = read verbatim (use for announcements: "Your 3pm meeting in 5").
+  # tell  = conversational injection (model reacts/integrates naturally).
+  - from: raven
+    to: voice.speak
+  - from: raven
+    to: voice.tell
+  - from: edith
+    to: voice.speak
+  - from: edith
+    to: voice.tell
+  - from: control
+    to: voice.speak
+  - from: control
+    to: voice.tell
+
+  # Voice tool-surface callers — Colton's dashboard + RAVEN can drive sessions.
+  - from: control
+    to: voice.start_session
+  - from: control
+    to: voice.stop_session
+  - from: control
+    to: voice.session_status
+  - from: raven
+    to: voice.start_session
+  - from: raven
+    to: voice.stop_session
+  - from: raven
+    to: voice.session_status

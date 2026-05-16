@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>LATTICE — voice</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         margin: 0; background: #0c0d10; color: #e6e6ea; }
+  header { padding: 1rem 1.5rem; border-bottom: 1px solid #1f2129;
+           display: flex; justify-content: space-between; align-items: center; }
+  header h1 { margin: 0; font-size: 1.05rem; font-weight: 600; letter-spacing: 0.02em; }
+  .pill { padding: 2px 10px; border-radius: 999px; font-size: 0.75rem;
+          background: #1f2129; color: #9aa0aa; }
+  .pill.ok { background: #143a22; color: #62d18b; }
+  .pill.warn { background: #3a2c14; color: #d1a162; }
+  .pill.err { background: #3a1414; color: #ff6e6e; }
+  .pill.live { background: #14253a; color: #62a4d1; }
+  main { display: grid; grid-template-columns: 1fr 1.2fr; gap: 1px;
+         background: #1f2129; min-height: calc(100vh - 60px); }
+  section { background: #0c0d10; padding: 1.25rem 1.5rem; }
+  h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
+       color: #6e7480; margin: 0 0 .8rem 0; font-weight: 600; }
+  .status-row { display: flex; align-items: center; gap: .8rem; margin-bottom: 1.2rem; }
+  .status-dot { width: 14px; height: 14px; border-radius: 50%;
+                background: #555a66; box-shadow: 0 0 0 0 rgba(0,0,0,0); transition: all .2s; }
+  .status-dot.listening { background: #62a4d1; box-shadow: 0 0 16px #62a4d1aa; }
+  .status-dot.speaking  { background: #62d18b; box-shadow: 0 0 18px #62d18baa; animation: pulse 1.2s infinite; }
+  .status-dot.processing { background: #d1a162; box-shadow: 0 0 14px #d1a162aa; }
+  .status-dot.error     { background: #ff6e6e; box-shadow: 0 0 14px #ff6e6eaa; }
+  .status-text { font-size: 1.4rem; font-weight: 500; }
+  @keyframes pulse { 0% { opacity: 1 } 50% { opacity: .55 } 100% { opacity: 1 } }
+  .viz-wrap { background: #14161e; border: 1px solid #1f2129; border-radius: 6px;
+              padding: .8rem; margin-bottom: 1.2rem; }
+  .viz-row { display: flex; align-items: center; gap: .6rem; margin-bottom: .35rem; }
+  .viz-row:last-child { margin-bottom: 0; }
+  .viz-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em;
+               color: #6e7480; width: 36px; }
+  .viz-canvas { flex: 1; height: 38px; background: #0c0d10; border-radius: 4px;
+                display: block; }
+  .viz-num { font-family: ui-monospace, SFMono-Regular, monospace; font-size: .72rem;
+             color: #6e7480; width: 38px; text-align: right; }
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: .35rem .8rem; font-size: .9rem; }
+  .kv dt { color: #6e7480; }
+  .kv dd { margin: 0; word-break: break-word; }
+  .banner { padding: .8rem 1rem; border-radius: 6px; margin-bottom: 1rem;
+            background: #3a2c14; color: #d1a162; font-size: .9rem; }
+  .banner.err { background: #3a1414; color: #ff8a8a; }
+  form { display: flex; flex-direction: column; gap: .55rem; margin-top: 1rem; }
+  label { font-size: .78rem; color: #6e7480; text-transform: uppercase; letter-spacing: .06em; }
+  input, textarea, select {
+    background: #14161e; color: #e6e6ea; border: 1px solid #1f2129;
+    border-radius: 4px; padding: .5rem .65rem; font: inherit; }
+  textarea { min-height: 60px; resize: vertical; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; }
+  button { background: #1f3a55; color: #cfe6ff; border: 1px solid #2a4d70;
+           padding: .5rem .9rem; border-radius: 4px; font: inherit; cursor: pointer; }
+  button:hover { background: #25496e; }
+  button.danger { background: #3a1414; color: #ffb3b3; border-color: #5a2222; }
+  button.danger:hover { background: #4d1a1a; }
+  .log { font-family: ui-monospace, SFMono-Regular, monospace; font-size: .82rem;
+         max-height: 50vh; overflow-y: auto; border-top: 1px solid #1f2129; padding-top: .8rem; }
+  .log .entry { padding: .35rem 0; border-bottom: 1px dashed #181a22; }
+  .log .role { display: inline-block; min-width: 70px; font-weight: 600; }
+  .role.user { color: #62a4d1; }
+  .role.assistant { color: #62d18b; }
+  .role.tool { color: #d1a162; }
+  .ts { color: #555a66; font-size: .7rem; margin-left: .5rem; }
+  small.muted { color: #555a66; }
+  hr { border: none; border-top: 1px solid #1f2129; margin: 1.2rem 0; }
+  .queue-list { font-family: ui-monospace, SFMono-Regular, monospace; font-size: .8rem;
+                background: #14161e; border: 1px solid #1f2129; border-radius: 4px;
+                padding: .5rem .75rem; max-height: 140px; overflow-y: auto; }
+  .queue-item { padding: .25rem 0; border-bottom: 1px dashed #1f2129; }
+  .queue-item:last-child { border-bottom: none; }
+  .queue-kind { display: inline-block; min-width: 50px; color: #d1a162; font-weight: 600; }
+  .queue-src { color: #6e7480; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LATTICE — voice node</h1>
+  <div id="pills"></div>
+</header>
+<main>
+  <section>
+    <h2>Status</h2>
+    <div class="status-row">
+      <div id="dot" class="status-dot"></div>
+      <div id="status" class="status-text">idle</div>
+    </div>
+    <div class="viz-wrap">
+      <div class="viz-row">
+        <span class="viz-label">mic</span>
+        <canvas id="viz-mic" class="viz-canvas"></canvas>
+        <span id="viz-mic-num" class="viz-num">0%</span>
+      </div>
+      <div class="viz-row">
+        <span class="viz-label">out</span>
+        <canvas id="viz-spk" class="viz-canvas"></canvas>
+        <span id="viz-spk-num" class="viz-num">0%</span>
+      </div>
+    </div>
+    <div id="banner-host"></div>
+    <h2>Session</h2>
+    <dl class="kv" id="session-kv">
+      <dt>state</dt><dd id="s-state">no active session</dd>
+    </dl>
+    <hr/>
+    <h2>Pending inbox queue</h2>
+    <div id="queue" class="queue-list"><small class="muted">(empty)</small></div>
+    <hr/>
+    <h2>Start a session</h2>
+    <form id="start-form">
+      <label>voice</label>
+      <select name="voice" id="voice-select"></select>
+      <label>input device (mic)</label>
+      <select name="audio_input_device" id="input-device-select">
+        <option value="">(auto)</option>
+      </select>
+      <label>output device (speaker)</label>
+      <select name="audio_output_device" id="output-device-select">
+        <option value="">(auto)</option>
+      </select>
+      <label>system_prompt (optional)</label>
+      <textarea name="system_prompt" placeholder="extra instructions for the model"></textarea>
+      <label>forward user transcripts to surface (optional, e.g. raven.message)</label>
+      <input name="on_user_transcript_target" placeholder="optional" />
+      <div class="row">
+        <button type="submit">Start session</button>
+        <button type="button" class="danger" id="stop-btn">Stop</button>
+      </div>
+    </form>
+  </section>
+  <section>
+    <h2>Transcript</h2>
+    <div id="log" class="log"></div>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  let currentMicRms = 0;
+  let currentSpkRms = 0;
+  const BAR_COUNT = 64;
+  const micBars = new Array(BAR_COUNT).fill(0);
+  const spkBars = new Array(BAR_COUNT).fill(0);
+  function drawBars(canvas, bars, color) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const gap = 2, n = bars.length;
+    const bw = (w - gap * (n - 1)) / n;
+    for (let i = 0; i < n; i++) {
+      const v = bars[i];
+      const bh = Math.max(1, v * h);
+      const x = i * (bw + gap);
+      const y = (h - bh) / 2;
+      const grd = ctx.createLinearGradient(0, h, 0, 0);
+      grd.addColorStop(0, color.dim);
+      grd.addColorStop(1, color.bright);
+      ctx.fillStyle = grd;
+      ctx.fillRect(x, y, bw, bh);
+    }
+  }
+  function tick() {
+    micBars.shift(); micBars.push(Math.pow(currentMicRms, 0.7));
+    spkBars.shift(); spkBars.push(Math.pow(currentSpkRms, 0.7));
+    const m = $('viz-mic'), s = $('viz-spk');
+    if (m) drawBars(m, micBars, { dim: '#1f3a55', bright: '#62a4d1' });
+    if (s) drawBars(s, spkBars, { dim: '#143a22', bright: '#62d18b' });
+    const mn = $('viz-mic-num'); if (mn) mn.textContent = (currentMicRms * 100).toFixed(0) + '%';
+    const sn = $('viz-spk-num'); if (sn) sn.textContent = (currentSpkRms * 100).toFixed(0) + '%';
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  function pill(label, cls) { return `<span class="pill ${cls||''}">${label}</span>`; }
+  function fmtTs(s) { try { return new Date(s).toLocaleTimeString(); } catch(_) { return s||''; } }
+  function fmtDur(sec) {
+    if (sec == null) return '—';
+    sec = Math.floor(sec);
+    if (sec < 60) return sec + 's';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    if (m < 60) return `${m}m ${s}s`;
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
+  }
+
+  function fillVoiceSelect(voices) {
+    const sel = $('voice-select');
+    if (!sel) return;
+    if (sel.dataset.populated === '1') return;
+    sel.innerHTML = '';
+    const list = (voices && voices.length) ? voices :
+      ['alloy', 'marin', 'cedar', 'shimmer', 'ash', 'coral', 'sage', 'verse'];
+    for (const v of list) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = v;
+      if (v === 'alloy') o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.dataset.populated = '1';
+  }
+
+  function applyState(st) {
+    fillVoiceSelect(st.supported_voices);
+    const pills = [];
+    pills.push(pill(st.model || 'gpt-realtime-2'));
+    pills.push(st.key_present ? pill('key OK', 'ok') : pill('OPENAI_API_KEY missing', 'err'));
+    if (st.devices) {
+      pills.push(st.devices.input_ok ? pill('mic OK', 'ok') : pill('no mic', 'warn'));
+      pills.push(st.devices.output_ok ? pill('speaker OK', 'ok') : pill('no speaker', 'warn'));
+    }
+    if (st.active) pills.push(pill('LIVE', 'live'));
+    $('pills').innerHTML = pills.join(' ');
+
+    const dot = $('dot');
+    dot.className = 'status-dot ' + (st.status || 'idle');
+    $('status').textContent = st.status || 'idle';
+
+    const banner = $('banner-host');
+    if (!st.key_present) {
+      banner.innerHTML = `<div class="banner err">Set <code>OPENAI_API_KEY</code> (env or <code>~/raven/config/api_keys.json</code>), then restart the voice process.</div>`;
+    } else if (st.devices && (!st.devices.input_ok || !st.devices.output_ok)) {
+      banner.innerHTML = `<div class="banner">Audio device issue — input_ok=${st.devices.input_ok} output_ok=${st.devices.output_ok}</div>`;
+    } else {
+      banner.innerHTML = '';
+    }
+
+    const sess = st.session;
+    const kv = $('session-kv');
+    if (!sess) {
+      kv.innerHTML = `<dt>state</dt><dd>no active session</dd>`;
+      currentMicRms = 0;
+      currentSpkRms = 0;
+    } else {
+      currentMicRms = Math.min(1, sess.mic_rms || 0);
+      currentSpkRms = Math.min(1, sess.spk_rms || 0);
+      kv.innerHTML = `
+        <dt>session_id</dt><dd>${sess.id}</dd>
+        <dt>voice</dt><dd>${sess.voice}</dd>
+        <dt>input device</dt><dd>${sess.input_device_name || '(default)'}</dd>
+        <dt>output device</dt><dd>${sess.output_device_name || '(default)'}</dd>
+        <dt>uptime</dt><dd>${fmtDur(sess.uptime_seconds)}</dd>
+        <dt>started</dt><dd>${fmtTs(sess.started_at)}</dd>
+        <dt>system_prompt</dt><dd><small class="muted">${(sess.system_prompt||'(default)')}</small></dd>
+        <dt>user → target</dt><dd>${sess.on_user_transcript_target || '(none)'}</dd>
+        <dt>last user</dt><dd>${sess.last_user_transcript || '—'}</dd>
+        <dt>last asst</dt><dd>${sess.last_assistant_transcript || '—'}</dd>
+        ${sess.error ? `<dt>error</dt><dd style="color:#ff8a8a">${sess.error}</dd>` : ''}
+      `;
+    }
+
+    const log = (st.transcript || []).slice().reverse();
+    $('log').innerHTML = log.map(e =>
+      `<div class="entry"><span class="role ${e.role}">${e.role}</span>${(e.text||'').replace(/</g,'&lt;')}<span class="ts">${fmtTs(e.timestamp)}</span></div>`
+    ).join('') || '<div class="entry"><small class="muted">(no utterances yet)</small></div>';
+
+    const q = st.pending_queue || [];
+    $('queue').innerHTML = q.length
+      ? q.map(i => `<div class="queue-item"><span class="queue-kind">${i.kind}</span>${(i.text||'').replace(/</g,'&lt;')} <span class="queue-src">[from ${i.source||'?'}]</span> <span class="ts">${fmtTs(i.ts)}</span></div>`).join('')
+      : '<small class="muted">(empty)</small>';
+  }
+
+  function postJSON(url, body) {
+    return fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify(body || {}) }).then(r => r.json());
+  }
+  $('start-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const body = {};
+    for (const [k,v] of f.entries()) { if (v) body[k] = v; }
+    postJSON('/api/start', body).then(r => {
+      if (r.error) alert(r.error + ': ' + (r.detail||''));
+    });
+  });
+  $('stop-btn').addEventListener('click', () => postJSON('/api/stop'));
+
+  function loadDevices() {
+    return fetch('/api/devices').then(r => r.json()).then(d => {
+      const inSel = $('input-device-select');
+      const outSel = $('output-device-select');
+      if (!inSel || !outSel) return;
+      const fill = (sel, list, defaultIdx) => {
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">(auto)</option>';
+        for (const dev of list) {
+          const o = document.createElement('option');
+          o.value = String(dev.index);
+          const isDefault = dev.index === defaultIdx ? ' • system default' : '';
+          o.textContent = `[${dev.index}] ${dev.name}${isDefault}`;
+          sel.appendChild(o);
+        }
+        if (cur) sel.value = cur;
+      };
+      fill(inSel, d.inputs || [], d.default_input_idx);
+      fill(outSel, d.outputs || [], d.default_output_idx);
+    }).catch(()=>{});
+  }
+  loadDevices();
+  fetch('/state').then(r => r.json()).then(applyState).catch(()=>{});
+  const es = new EventSource('/events');
+  es.addEventListener('state', (e) => { try { applyState(JSON.parse(e.data)); } catch(_) {} });
+</script>
+</body>
+</html>
