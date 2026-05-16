@@ -1,23 +1,28 @@
 """browser — browser-automation node for the LATTICE mesh.
 
 Same mesh shape as EDITH: registers as 'browser', subscribes to /v0/stream,
-routes deliver events for the 'browser.query' surface through a
-browser-use agent loop, replies to the sender by issuing a NEW signed
-invocation to the sender's inbox surface.
+routes deliver events for the 'browser.query' surface, replies to the
+sender by issuing a NEW signed invocation to the sender's inbox.
 
-Why browser-use directly (no Claude Code CLI in the loop)?
-  browser-use already runs its own LLM-driven agent loop and handles
-  retries/backoff via the Anthropic SDK. Wrapping it in another CLI
-  loop would double-LLM the request. We call `Agent.run()` and ship
-  the final result back to the sender.
+Backend: Claude Code CLI + Playwright MCP. The CLI is spawned with a
+generated --mcp-config that points at @playwright/mcp@latest over npx.
+Claude drives the browser via MCP tool calls (browser_navigate,
+browser_click, browser_snapshot, etc) and returns a final text answer.
 
-Auth.
-  browser-use's ChatAnthropic uses the raw Anthropic SDK. It accepts
-  either `api_key` (x-api-key, console.anthropic.com billing) or
-  `auth_token` (Bearer header, OAuth Max-plan billing) plus a beta
-  header for the OAuth path. We prefer ANTHROPIC_API_KEY when set
-  because it's the well-trodden path; if only CLAUDE_CODE_OAUTH_TOKEN
-  is present we try the OAuth route with the beta header.
+Why NOT browser-use? The first design used browser-use directly with
+the Anthropic SDK, but:
+  1. ANTHROPIC_API_KEY is out of credits.
+  2. CLAUDE_CODE_OAUTH_TOKEN works through the Claude Code CLI path
+     only; passing it as auth_token+beta-header on the raw SDK gets
+     rate-limited 429 by Anthropic's edge.
+The CLI path is the only one Anthropic supports for Max-plan OAuth, so
+that's what we use here — same pattern EDITH already uses for chat.
+
+The mesh MCP (./mesh_mcp.py) is ALSO loaded so the spawned CLI can call
+back into the mesh — e.g. notify control.message or send the answer
+straight to raven.message — same way EDITH does. The node-level
+fallback below ensures the user gets a reply even when the CLI forgets
+to call the mesh tool.
 """
 from __future__ import annotations
 
@@ -40,20 +45,50 @@ SURFACE = "browser.query"
 SECRET = os.environ["BROWSER_SECRET"].encode()
 MODEL = os.environ.get("BROWSER_MODEL", "claude-sonnet-4-6")
 HEADLESS = os.environ.get("BROWSER_HEADLESS", "1") not in ("0", "false", "")
-MAX_STEPS = int(os.environ.get("BROWSER_MAX_STEPS", "25"))
+MAX_TURNS = int(os.environ.get("BROWSER_MAX_TURNS", "20"))
 MANIFEST_PATH = os.environ.get("MANIFEST_PATH", "/app/manifest.yaml")
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or ""
-OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or ""
-if not ANTHROPIC_API_KEY and not OAUTH_TOKEN:
+MCP_ENABLED = os.environ.get("BROWSER_MCP_ENABLED", "1") not in ("0", "false", "")
+MCP_SCRIPT = os.environ.get("BROWSER_MCP_SCRIPT", "/app/mesh_mcp.py")
+MCP_CONFIG_PATH = "/tmp/browser_mcp_config.json"
+
+OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+if not OAUTH_TOKEN:
     print(
-        "[browser] FATAL: neither ANTHROPIC_API_KEY nor "
-        "CLAUDE_CODE_OAUTH_TOKEN is set",
+        "[browser] FATAL: CLAUDE_CODE_OAUTH_TOKEN not set (required for CLI mode)",
         file=sys.stderr,
     )
     sys.exit(1)
 
-AUTH_MODE = "api-key" if ANTHROPIC_API_KEY else "oauth-token"
+AUTH_MODE = "oauth-cli"
+
+# Conversation continuity (parity with EDITH).
+SESSIONS: dict[str, str] = {}
+
+PERSONA = (
+    "You are the 'browser' node in the LATTICE mesh — Colton's browser "
+    "automation agent. The user gives you a natural-language task that "
+    "requires browsing the live web; you use the Playwright MCP tools "
+    "(prefixed `mcp__playwright__browser_*`) to drive a real Chromium "
+    "browser and answer.\n\n"
+    "Available tools include: browser_navigate, browser_snapshot, "
+    "browser_click, browser_type, browser_select_option, "
+    "browser_press_key, browser_wait_for, browser_take_screenshot, "
+    "browser_evaluate, browser_console_messages, browser_close.\n\n"
+    "Workflow: navigate to a relevant URL, snapshot the page, locate "
+    "the answer, and reply with ONLY the requested fact (no chatter). "
+    "If you cannot find it after a few attempts, say so plainly.\n\n"
+    "REPLY PROTOCOL — IMPORTANT. The browser.query surface is "
+    "fire-and-forget. The original sender does NOT get your prose "
+    "back automatically. Each incoming task message will begin with a "
+    "tag of the form `[from: <sender_id>]` identifying the sender. "
+    "After you compose your reply text, you SHOULD send it as a new "
+    "mesh invocation to that sender's inbox surface using the "
+    "appropriate mesh tool: `mcp__lattice_mesh__mesh_<sender>_<inbox>` "
+    "(e.g. `mcp__lattice_mesh__mesh_raven_message`) with payload "
+    "`{\"message\": \"<your reply>\"}`. If you forget, the node-side "
+    "fallback ships your final answer to the sender's inbox anyway."
+)
 
 
 def canonical(env: dict) -> bytes:
@@ -69,60 +104,142 @@ def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _build_llm():
-    """Return a browser-use LLM client wired to whichever auth we have.
+def _ensure_mcp_config() -> str:
+    """Write the MCP config the CLI loads. Two servers:
 
-    Imported lazily — browser-use is heavy and pulls in Playwright + a
-    network call to verify Chromium on import in some versions.
+    - `playwright`: @playwright/mcp@latest over npx — gives Claude tools
+      like browser_navigate, browser_click, browser_snapshot.
+    - `lattice_mesh`: this node's outbound-edge bridge (mesh_mcp.py) so
+      Claude can reply via a signed mesh invocation.
     """
-    from browser_use import ChatAnthropic  # type: ignore[import-not-found]
+    servers: dict = {
+        "playwright": {
+            # @playwright/mcp ships its own Chromium that Playwright's
+            # bundled-binaries flow installs to ~/.cache/ms-playwright
+            # on first run. Headless is the default; we don't expose
+            # the user-data dir, so each invocation gets a fresh
+            # incognito-style profile.
+            "command": "npx",
+            "args": [
+                "-y", "@playwright/mcp@latest",
+                "--headless" if HEADLESS else "--isolated",
+                "--browser", "chromium",
+            ],
+        },
+    }
+    if MCP_ENABLED and os.path.exists(MCP_SCRIPT):
+        servers["lattice_mesh"] = {
+            "command": "python3",
+            "args": [MCP_SCRIPT],
+            "env": {
+                "MESH_NODE_ID": NODE_ID,
+                "CORE_URL": CORE_URL,
+                "MANIFEST_PATH": MANIFEST_PATH,
+                "BROWSER_SECRET": os.environ["BROWSER_SECRET"],
+            },
+        }
+    cfg = {"mcpServers": servers}
+    with open(MCP_CONFIG_PATH, "w") as f:
+        json.dump(cfg, f)
+    return MCP_CONFIG_PATH
 
-    if ANTHROPIC_API_KEY:
-        return ChatAnthropic(model=MODEL, api_key=ANTHROPIC_API_KEY)
-    # OAuth path — pass Bearer token + the beta header Anthropic's edge
-    # uses to route Claude Code / Max plan requests. May still 401 if
-    # Anthropic later requires the Claude Code system-prompt prefix; if
-    # so we surface the error back to the sender.
-    return ChatAnthropic(
-        model=MODEL,
-        auth_token=OAUTH_TOKEN,
-        default_headers={"anthropic-beta": "oauth-2025-04-20"},
+
+async def call_claude(conversation_id: str, user_message: str) -> tuple[str, set[str]]:
+    """Spawn the claude CLI with Playwright + lattice_mesh MCP servers.
+
+    Returns (final_text, mesh_tools_succeeded). Mesh tool success lets
+    the caller skip the fallback reply when the CLI shipped the message
+    itself.
+    """
+    cfg_path = _ensure_mcp_config()
+    args = [
+        "claude",
+        "-p", user_message,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--model", MODEL,
+        "--append-system-prompt", PERSONA,
+        "--mcp-config", cfg_path,
+        "--dangerously-skip-permissions",
+    ]
+    prior_session = SESSIONS.get(conversation_id)
+    if prior_session:
+        args.extend(["--resume", prior_session])
+
+    # Strip ANTHROPIC_API_KEY so the CLI uses OAuth (Max plan). Same
+    # trick as EDITH — if both are set the CLI prefers the API key
+    # path, which has been billing-flagged on this account.
+    cli_env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    cli_env["HOME"] = cli_env.get("HOME", "/home/browser")
+
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd="/tmp",
+        env=cli_env,
     )
+    stdout_bytes, stderr_bytes = await proc.communicate()
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
 
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"claude CLI exited {proc.returncode}: {stderr.strip() or stdout.strip()}"
+        )
 
-async def run_browser_task(task: str) -> str:
-    """Execute a browser-use agent loop and return the final result string."""
-    from browser_use import Agent, Browser  # type: ignore[import-not-found]
+    result_text = ""
+    new_session_id: str | None = None
+    mesh_calls: dict[str, str] = {}
+    mesh_tools_succeeded: set[str] = set()
 
-    llm = _build_llm()
-    browser = Browser(headless=HEADLESS)
-    agent = Agent(task=task, llm=llm, browser=browser)
-    try:
-        history = await agent.run(max_steps=MAX_STEPS)
-    finally:
-        # browser-use's Browser holds Playwright resources; close cleanly.
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
         try:
-            await browser.close()
-        except Exception:  # noqa: BLE001
-            pass
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        mtype = msg.get("type")
+        if mtype == "system" and msg.get("subtype") == "init":
+            sid = msg.get("session_id")
+            if sid:
+                new_session_id = sid
+        elif mtype == "assistant":
+            inner = msg.get("message") or {}
+            for block in inner.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = str(block.get("name", ""))
+                if name.startswith("mcp__lattice_mesh__mesh_"):
+                    use_id = str(block.get("id", ""))
+                    if use_id:
+                        mesh_calls[use_id] = name
+        elif mtype == "user":
+            inner = msg.get("message") or {}
+            for block in inner.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                use_id = str(block.get("tool_use_id", ""))
+                name = mesh_calls.get(use_id)
+                if name and not block.get("is_error"):
+                    mesh_tools_succeeded.add(name)
+        elif mtype == "result":
+            if msg.get("result"):
+                result_text = msg["result"]
+            if msg.get("is_error") and msg.get("errors"):
+                errs = msg["errors"]
+                if isinstance(errs, list):
+                    result_text = "; ".join(str(e) for e in errs)
 
-    # `history` is an AgentHistoryList with .final_result() in 0.12.x.
-    final = None
-    try:
-        final = history.final_result()
-    except Exception:  # noqa: BLE001
-        final = None
-    if not final:
-        # Fall back to the last extracted_content if final_result is empty.
-        try:
-            extracted = history.extracted_content()
-            if isinstance(extracted, list) and extracted:
-                final = extracted[-1]
-            elif isinstance(extracted, str):
-                final = extracted
-        except Exception:  # noqa: BLE001
-            pass
-    return final or "(browser-use produced no final result)"
+    if new_session_id:
+        SESSIONS[conversation_id] = new_session_id
+
+    if not result_text:
+        result_text = stderr.strip() or "(empty response from claude CLI)"
+
+    return result_text, mesh_tools_succeeded
 
 
 def find_inbox_surface(node_id: str) -> str | None:
@@ -192,8 +309,6 @@ async def handle_deliver(session: aiohttp.ClientSession, env: dict) -> None:
     invoker = env.get("from", "")
     msg_id = env["id"]
     payload = env.get("payload") or {}
-    # Accept either {"task": "..."} (preferred) or {"message": "..."} for
-    # symmetry with the chat-surface payload shape callers may copy.
     task = payload.get("task") or payload.get("message") or ""
     conv_id = payload.get("conversation_id") or "default"
 
@@ -206,24 +321,31 @@ async def handle_deliver(session: aiohttp.ClientSession, env: dict) -> None:
         await _reply(session, invoker, msg_id, conv_id, "(empty task)")
         return
 
+    tagged = f"[from: {invoker}] {task}"
     try:
-        result = await run_browser_task(task)
+        reply, mesh_ok = await call_claude(conv_id, tagged)
     except Exception as e:  # noqa: BLE001
-        print(f"[browser] agent crash: {e!r}", file=sys.stderr, flush=True)
+        print(f"[browser] claude CLI error: {e!r}", file=sys.stderr, flush=True)
         await _reply(
-            session,
-            invoker,
-            msg_id,
-            conv_id,
-            f"[browser error] {type(e).__name__}: {e}",
+            session, invoker, msg_id, conv_id,
+            f"[browser error] claude_cli_error: {e}",
         )
         return
 
+    target = find_inbox_surface(invoker)
+    expected_tool = (
+        f"mcp__lattice_mesh__mesh_{invoker}_{target}" if target else None
+    )
+    replied_via_cli = expected_tool is not None and expected_tool in mesh_ok
     print(
-        f"[browser] reply len={len(result)} chars for conv={conv_id}",
+        f"[browser] reply len={len(reply)} chars mesh_ok={sorted(mesh_ok)} "
+        f"expected={expected_tool!r} replied_via_cli={replied_via_cli}",
         flush=True,
     )
-    await _reply(session, invoker, msg_id, conv_id, result)
+
+    if replied_via_cli:
+        return
+    await _reply(session, invoker, msg_id, conv_id, reply)
 
 
 async def _reply(
@@ -268,7 +390,7 @@ async def main() -> None:
         session_id = reg_resp["session_id"]
         print(
             f"[browser] registered session={session_id[:8]} model={MODEL} "
-            f"auth={AUTH_MODE} headless={HEADLESS}",
+            f"auth={AUTH_MODE} headless={HEADLESS} mcp_enabled={MCP_ENABLED}",
             flush=True,
         )
 
@@ -285,8 +407,7 @@ async def main() -> None:
                     if event_type == "deliver" and buf:
                         try:
                             data = json.loads("\n".join(buf))
-                            # Spawn a task so a long-running browser job
-                            # doesn't block subsequent SSE events.
+                            # Don't block the SSE loop on a long browser task.
                             asyncio.create_task(handle_deliver(s, data))
                         except Exception as e:  # noqa: BLE001
                             print(

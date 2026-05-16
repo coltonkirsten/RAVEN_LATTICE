@@ -1,9 +1,11 @@
 # browser
 
 A LATTICE mesh node that turns a natural-language task into a browser
-session. Surface: `browser.query` (inbox, fire-and-forget). The agent
-loop is **browser-use** + Claude Sonnet 4.6 running a headed Chromium
-against an Xvfb virtual display inside the container.
+session. Surface: `browser.query` (inbox, fire-and-forget). Backend:
+the Claude Code CLI spawned with a `@playwright/mcp` MCP server, so
+Claude Sonnet 4.6 drives a headless Chromium via the standard MCP
+browser tools (`browser_navigate`, `browser_click`, `browser_snapshot`,
+…) — same auth path EDITH uses (Max-plan OAuth).
 
 ## Payload
 
@@ -22,6 +24,10 @@ The reply is a NEW signed invocation to the sender's inbox surface
   "conversation_id": "..." }
 ```
 
+The spawned CLI is ALSO loaded with `mesh_mcp.py`, so it can reply
+directly via `mcp__lattice_mesh__mesh_<sender>_<inbox>`. If it forgets,
+the node-side fallback ships the final text on its behalf.
+
 ## Boot
 
 ```bash
@@ -32,36 +38,33 @@ docker logs -f lattice-browser
 
 Expect:
 ```
-[browser] registered session=<8 hex> model=claude-sonnet-4-6 auth=api-key headless=True
+[browser] registered session=<8 hex> model=claude-sonnet-4-6 auth=oauth-cli headless=True mcp_enabled=True
 ```
 
-## Auth — API key vs OAuth
+## Auth — OAuth via Claude Code CLI
 
-browser-use's `ChatAnthropic` calls the raw Anthropic SDK, which means:
-- **`ANTHROPIC_API_KEY`** (`sk-ant-api03-...`) — straightforward, billed
-  pay-as-you-go on console.anthropic.com. **Preferred.**
-- **`CLAUDE_CODE_OAUTH_TOKEN`** (`sk-ant-oat01-...`) — Max-plan OAuth.
-  The node falls back to this when no API key is set, passing
-  `auth_token=` + `anthropic-beta: oauth-2025-04-20`. This *may* still
-  401 if Anthropic's edge requires the Claude Code system-prompt prefix
-  the CLI injects — if you see auth failures in the logs, set the API
-  key instead.
+This node uses the Max-plan OAuth flow exclusively. browser_node.py
+strips `ANTHROPIC_API_KEY` before spawning the CLI so the CLI falls
+back to `CLAUDE_CODE_OAUTH_TOKEN` (same trick EDITH uses). Pay-as-you-go
+API keys are not consumed.
 
-EDITH uses OAuth via the Claude Code CLI, which is the supported path
-for OAuth. browser-use bypasses that CLI, so API key is the path of
-least resistance.
+Why not browser-use? An earlier design used browser-use with the
+Anthropic SDK directly — but the SDK can't broker OAuth, and the
+account's pay-as-you-go credit balance is $0. The CLI is the only
+supported OAuth path.
 
 ## Costs
 
-Sonnet 4.6 pricing (~$3/MTok in, ~$15/MTok out). A 3-step Wikipedia
-lookup runs ~5–15k input tokens + ~1k output → roughly **$0.02–0.05
-per query**. Long multi-step research jobs can climb to **$0.30**.
+Counted against the Max plan's monthly bucket — no per-task billing.
+Headroom is the shared pool with EDITH and any other CLI-backed nodes.
 
 ## Config knobs (env)
 
 - `BROWSER_MODEL` (default `claude-sonnet-4-6`)
 - `BROWSER_HEADLESS` (`1`/`0`, default `1` — Xvfb makes headed work too)
-- `BROWSER_MAX_STEPS` (default `25`)
+- `BROWSER_MAX_TURNS` (default `20`)
+- `BROWSER_MCP_ENABLED` (`1`/`0`, default `1` — mounts the mesh outbound
+  bridge so the CLI can reply directly via signed mesh invocations)
 
 ## Limits
 

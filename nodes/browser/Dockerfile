@@ -1,6 +1,7 @@
-# browser node — mirrors EDITH's container shape, adds Chromium + Xvfb +
-# browser-use so a natural-language task can drive a headed Chromium agent
-# loop inside a container. Same nexus-cell base as EDITH for parity.
+# browser node — mirrors EDITH's container shape, adds Chromium runtime
+# libs + Xvfb so the spawned Claude CLI's Playwright MCP server can drive
+# a real headed Chromium inside the container. Same nexus-cell base as
+# EDITH for parity (already ships node 22 + python3 + claude CLI).
 FROM nexus-cell:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -9,14 +10,20 @@ USER root
 
 WORKDIR /app
 
-# Browser stack: Chromium itself (via Playwright's bundled binary later) plus
-# the OS libs every headless Chromium needs, Xvfb for the "headed in a
-# container" pattern (browser-use's docs recommend this when sites detect
-# pure --headless), and font packages so rendered pages don't blow up on
-# unicode/web fonts.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# OS-level shared libs Chromium needs at runtime. We do NOT install the
+# chromium binary itself — Playwright MCP (started via `npx
+# @playwright/mcp@latest`) brings its own pinned Chromium under
+# /opt/pw-browsers and that's what actually runs.
+#
+# arm64 bookworm has been seeing intermittent Hash Sum mismatch on the
+# default deb.debian.org mirror; HTTPS + by-hash off + retries clears it.
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
+    && echo 'Acquire::By-Hash "no";' >> /etc/apt/apt.conf.d/80-retries \
+    && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true \
+    && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list 2>/dev/null || true \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get update && apt-get install -y --no-install-recommends \
         xvfb \
-        chromium \
         fonts-liberation \
         fonts-noto-color-emoji \
         libnss3 \
@@ -36,20 +43,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpango-1.0-0 \
         libcairo2 \
         ca-certificates \
-        wget \
-        gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+# Tiny pip surface (just aiohttp + pyyaml for the node loop) — keeps the
+# build robust on Docker Desktop's flaky-IPv6 path that bites bigger pip
+# installs with SSL "DECRYPTION_FAILED_OR_BAD_RECORD_MAC". Force IPv4
+# resolution as belt-and-suspenders.
+RUN echo 'precedence ::ffff:0:0/96 100' >> /etc/gai.conf \
+    && pip3 install --no-cache-dir --break-system-packages \
+        --retries 10 --timeout 120 \
+        -r requirements.txt
 
-# Install Playwright's Chromium build under /opt/pw-browsers so it's owned
-# by root and shared by every container user (browser-use uses Playwright
-# under the hood; without this it will try to download chromium at runtime
-# as a non-root user with no HOME write permission).
+# Playwright's Chromium is downloaded at first runtime (~185MB). We do
+# NOT pre-install it during the build because Docker Desktop on macOS
+# arm64 has a flaky IPv6/MTU path that triggers
+# `ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC` mid-stream on the
+# cdn.playwright.dev download — same failure mode that bit the earlier
+# browser-use pip install. The Playwright MCP server invoked by the
+# spawned Claude CLI will fetch Chromium on first use inside the running
+# container, which uses a different network path (NAT'd bridge) that is
+# generally fine. The download lands under PLAYWRIGHT_BROWSERS_PATH so a
+# named volume can persist it across rebuilds.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
-RUN python3 -m playwright install chromium --with-deps || \
-    python3 -m playwright install chromium
+RUN mkdir -p /opt/pw-browsers && chmod 0777 /opt/pw-browsers
 
 COPY browser_node.py .
 COPY mesh_mcp.py .

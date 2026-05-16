@@ -7,26 +7,32 @@ services:
       - ../../hosts/mac-mini/.env
     environment:
       - BROWSER_SECRET=${BROWSER_SECRET:?BROWSER_SECRET must be set in ../../hosts/mac-mini/.env}
-      # Auth precedence: API key wins (browser-use's ChatAnthropic uses the
-      # raw Anthropic SDK and OAuth-tokens require an extra beta header
-      # path the SDK doesn't ship). If only OAuth is set we try a
-      # best-effort fallback inside browser_node.py.
+      # OAuth path only: browser_node.py spawns the Claude Code CLI with
+      # ANTHROPIC_API_KEY stripped so the CLI falls back to the Max-plan
+      # OAuth token (same trick EDITH uses). We still pass API_KEY through
+      # so the env stays consistent across nodes.
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:?CLAUDE_CODE_OAUTH_TOKEN required for OAuth path}
       - CORE_URL=${CORE_URL:-http://host.docker.internal:8000}
       - BROWSER_MODEL=${BROWSER_MODEL:-claude-sonnet-4-6}
       - BROWSER_HEADLESS=${BROWSER_HEADLESS:-1}
-      - BROWSER_MAX_STEPS=${BROWSER_MAX_STEPS:-25}
+      - BROWSER_MAX_TURNS=${BROWSER_MAX_TURNS:-20}
       - MANIFEST_PATH=/app/manifest.yaml
-      # Playwright already-installed location (set in Dockerfile too;
-      # repeated here so docker exec sessions see it).
+      # Playwright's Chromium lives under this path; the @playwright/mcp
+      # server picks it up automatically.
       - PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
     volumes:
       - ../../manifest.yaml:/app/manifest.yaml:ro
+      # Persist Playwright's Chromium download (~185MB) across rebuilds.
+      # Image does NOT pre-install it (see Dockerfile note); first
+      # invocation fetches into this volume.
+      - pw_browsers:/opt/pw-browsers
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # browser-use spawns Chromium; give it enough shm so multi-tab work
-    # doesn't crash on /dev/shm exhaustion (standard Playwright Docker
-    # tip).
+    # Playwright's Chromium needs generous /dev/shm or multi-tab pages
+    # crash. Standard Playwright Docker recipe.
     shm_size: "2gb"
     network_mode: bridge
+
+volumes:
+  pw_browsers:
