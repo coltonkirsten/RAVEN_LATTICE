@@ -106,6 +106,19 @@ nodes:
         invocation_mode: request_response
         schema: shared/schemas/permissive.json
 
+  - id: browser
+    kind: capability
+    runtime: docker
+    identity_secret: env:BROWSER_SECRET
+    metadata:
+      description: "Browser-automation agent. browser-use + Sonnet 4.6 driving Chromium in Docker. Natural-language task in, text answer out. Runs on Mac mini."
+      host: mac-mini
+    surfaces:
+      - name: query
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
+
   - id: avp_voice
     kind: actor
     runtime: docker
@@ -253,6 +266,26 @@ relationships:
   # (e.g. panel deleted by the user). Optional but useful.
   - from: avp
     to: raven.message
+
+  # Inbound to browser.query — raven/edith/control/voice can fire tasks.
+  - from: raven
+    to: browser.query
+  - from: edith
+    to: browser.query
+  - from: control
+    to: browser.query
+  - from: voice
+    to: browser.query
+
+  # Outbound from browser — replies to whoever sent the task.
+  - from: browser
+    to: raven.message
+  - from: browser
+    to: edith.chat
+  - from: browser
+    to: control.message
+  - from: browser
+    to: voice.tell
 
   # Inbound to avp_voice: raven, edith, and control can drive voice sessions.
   - from: raven

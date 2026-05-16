@@ -1,0 +1,4 @@
+aiohttp>=3.9
+pyyaml>=6.0
+browser-use>=0.12.6
+anthropic>=0.40

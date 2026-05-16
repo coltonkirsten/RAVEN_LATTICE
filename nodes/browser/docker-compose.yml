@@ -1,0 +1,32 @@
+services:
+  browser:
+    build: .
+    container_name: lattice-browser
+    restart: unless-stopped
+    env_file:
+      - ../../hosts/mac-mini/.env
+    environment:
+      - BROWSER_SECRET=${BROWSER_SECRET:?BROWSER_SECRET must be set in ../../hosts/mac-mini/.env}
+      # Auth precedence: API key wins (browser-use's ChatAnthropic uses the
+      # raw Anthropic SDK and OAuth-tokens require an extra beta header
+      # path the SDK doesn't ship). If only OAuth is set we try a
+      # best-effort fallback inside browser_node.py.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - CORE_URL=${CORE_URL:-http://host.docker.internal:8000}
+      - BROWSER_MODEL=${BROWSER_MODEL:-claude-sonnet-4-6}
+      - BROWSER_HEADLESS=${BROWSER_HEADLESS:-1}
+      - BROWSER_MAX_STEPS=${BROWSER_MAX_STEPS:-25}
+      - MANIFEST_PATH=/app/manifest.yaml
+      # Playwright already-installed location (set in Dockerfile too;
+      # repeated here so docker exec sessions see it).
+      - PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+    volumes:
+      - ../../manifest.yaml:/app/manifest.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # browser-use spawns Chromium; give it enough shm so multi-tab work
+    # doesn't crash on /dev/shm exhaustion (standard Playwright Docker
+    # tip).
+    shm_size: "2gb"
+    network_mode: bridge
