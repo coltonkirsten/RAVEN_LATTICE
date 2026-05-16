@@ -177,7 +177,11 @@ app.get("/api/audit/poll", async (req, res) => {
       return res.status(r.status).json({ audit: [], error: r.body });
     }
     const payload = r.body?.payload ?? r.body;
-    const arr = Array.isArray(payload) ? payload : payload?.audit ?? [];
+    // Core's core.audit_query returns {results, scanned, truncated}.
+    // Older shape may have been {audit: [...]} or a bare array. Accept all.
+    const arr = Array.isArray(payload)
+      ? payload
+      : payload?.results ?? payload?.audit ?? [];
     res.json({ audit: arr });
   } catch (e) {
     res.status(502).json({ audit: [], error: e.message });
