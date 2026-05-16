@@ -69,6 +69,10 @@ function setPhysicsForTopologyChange() {
 let lastNodeIds = new Set();
 let lastEdgeKeys = new Set();
 let seenAuditIds = new Set();
+// Cache of raw audit entries by id, so clicking a row can open the full
+// envelope in a modal without re-fetching. Bounded alongside MAX_AUDIT_ENTRIES
+// via pruneAuditCache().
+const auditCache = new Map();
 let currentRelationships = [];
 
 // Track correlation_ids of audit-poll invocations we've filtered out, so we
@@ -304,8 +308,24 @@ function renderAuditEntry(entry) {
     `<span class="ts">${escapeHtml(ts)}</span>` +
     `<span class="route">${escapeHtml(route)}</span>` +
     `<span class="decision ${decisionClass(dec)}">${escapeHtml(dec)}</span>`;
-  li.title = JSON.stringify(entry, null, 2);
+  li.title = "click to view full envelope";
+  li.dataset.auditId = id;
+  auditCache.set(id, entry);
+  li.addEventListener("click", () => openEnvelopeModal(id));
   return li;
+}
+
+function pruneAuditCache() {
+  // Keep the cache size bounded; drop entries that no longer have a row
+  // in the DOM. Called after the DOM-side trim in pollAudit().
+  if (auditCache.size <= MAX_AUDIT_ENTRIES * 2) return;
+  const liveIds = new Set();
+  for (const li of auditListEl.querySelectorAll("li[data-audit-id]")) {
+    liveIds.add(li.dataset.auditId);
+  }
+  for (const id of auditCache.keys()) {
+    if (!liveIds.has(id)) auditCache.delete(id);
+  }
 }
 
 function escapeHtml(s) {
@@ -349,6 +369,7 @@ async function pollAudit() {
     while (auditListEl.childElementCount > MAX_AUDIT_ENTRIES) {
       auditListEl.removeChild(auditListEl.lastChild);
     }
+    pruneAuditCache();
   } catch (e) {
     auditNoteEl.textContent = `audit error: ${e.message}`;
   }
@@ -403,6 +424,7 @@ function resetAuditList() {
   filteredCorrIds.clear();
   filteredCorrOrder.length = 0;
   auditListEl.innerHTML = "";
+  auditCache.clear();
 }
 
 if (auditFilterEl) {
@@ -528,3 +550,104 @@ pollInbox();
 setInterval(pollIntrospect, POLL_INTROSPECT_MS);
 setInterval(pollAudit, POLL_AUDIT_MS);
 setInterval(pollInbox, POLL_INBOX_MS);
+
+// -------------------------------------------------------------------
+// Envelope modal — click audit row to view full entry
+// -------------------------------------------------------------------
+
+const modalEl = document.getElementById("envelope-modal");
+const modalMetaEl = document.getElementById("envelope-modal-meta");
+const modalBodyEl = document.getElementById("envelope-modal-body").querySelector("code");
+const modalCloseBtn = document.getElementById("envelope-modal-close");
+const modalCopyBtn = document.getElementById("envelope-modal-copy");
+
+let modalCurrentJson = "";
+let modalCurrentId = null;
+
+function syntaxHighlight(jsonStr) {
+  // Tint JSON tokens via spans. Operates on the already-stringified JSON so
+  // we don't have to walk the object graph. Escape first, then apply regex.
+  const escaped = escapeHtml(jsonStr);
+  return escaped.replace(
+    /("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+    (match) => {
+      let cls = "j-number";
+      if (/^"/.test(match)) {
+        cls = /:$/.test(match) ? "j-key" : "j-string";
+      } else if (/true|false/.test(match)) {
+        cls = "j-bool";
+      } else if (/null/.test(match)) {
+        cls = "j-null";
+      }
+      return `<span class="${cls}">${match}</span>`;
+    }
+  );
+}
+
+function openEnvelopeModal(id) {
+  const entry = auditCache.get(id);
+  if (!entry) return;
+  modalCurrentId = id;
+  modalCurrentJson = JSON.stringify(entry, null, 2);
+
+  const ts = (entry.timestamp || "").replace("T", " ").replace("Z", "");
+  const route = `${entry.from_node || "?"} → ${entry.to_surface || "?"}`;
+  const dec = entry.decision || entry.type || "?";
+  modalMetaEl.innerHTML =
+    `<span class="meta-ts">${escapeHtml(ts)}</span> ` +
+    `<span class="meta-route">${escapeHtml(route)}</span>` +
+    `<span class="meta-decision ${decisionClass(dec)}">${escapeHtml(dec)}</span>`;
+
+  modalBodyEl.innerHTML = syntaxHighlight(modalCurrentJson);
+
+  // Visually mark the selected row so users can re-find it after closing.
+  for (const li of auditListEl.querySelectorAll("li.selected")) {
+    li.classList.remove("selected");
+  }
+  const selectedLi = auditListEl.querySelector(`li[data-audit-id="${CSS.escape(id)}"]`);
+  if (selectedLi) selectedLi.classList.add("selected");
+
+  modalEl.hidden = false;
+  modalCopyBtn.classList.remove("copied");
+  modalCopyBtn.textContent = "copy";
+}
+
+function closeEnvelopeModal() {
+  modalEl.hidden = true;
+  modalCurrentJson = "";
+  modalCurrentId = null;
+  for (const li of auditListEl.querySelectorAll("li.selected")) {
+    li.classList.remove("selected");
+  }
+}
+
+modalCloseBtn.addEventListener("click", closeEnvelopeModal);
+
+// Click outside the modal panel (on the backdrop) closes it.
+modalEl.addEventListener("click", (ev) => {
+  if (ev.target === modalEl) closeEnvelopeModal();
+});
+
+// Esc closes the modal when it's open.
+document.addEventListener("keydown", (ev) => {
+  if (modalEl.hidden) return;
+  if (ev.key === "Escape") closeEnvelopeModal();
+});
+
+modalCopyBtn.addEventListener("click", async () => {
+  if (!modalCurrentJson) return;
+  try {
+    await navigator.clipboard.writeText(modalCurrentJson);
+    modalCopyBtn.classList.add("copied");
+    modalCopyBtn.textContent = "copied";
+    setTimeout(() => {
+      modalCopyBtn.classList.remove("copied");
+      modalCopyBtn.textContent = "copy";
+    }, 1400);
+  } catch (e) {
+    modalCopyBtn.textContent = "copy failed";
+    setTimeout(() => {
+      modalCopyBtn.textContent = "copy";
+    }, 1400);
+  }
+});

@@ -59,6 +59,18 @@
       </section>
     </main>
 
+    <div id="envelope-modal" class="modal-backdrop" hidden>
+      <div class="modal" role="dialog" aria-labelledby="envelope-modal-title" aria-modal="true">
+        <div class="modal-head">
+          <h3 id="envelope-modal-title">audit entry</h3>
+          <div class="modal-meta" id="envelope-modal-meta"></div>
+          <button type="button" id="envelope-modal-copy" class="modal-btn" title="Copy JSON to clipboard">copy</button>
+          <button type="button" id="envelope-modal-close" class="modal-btn" title="Close (Esc)">×</button>
+        </div>
+        <pre id="envelope-modal-body"><code></code></pre>
+      </div>
+    </div>
+
     <script src="app.js"></script>
   </body>
 </html>

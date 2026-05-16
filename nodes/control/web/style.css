@@ -411,3 +411,140 @@ div.vis-tooltip {
   color: var(--dim);
   padding: 2px 4px;
 }
+
+/* -------------------------------------------------------------------
+   Audit log rows — clickable to open envelope modal
+   ------------------------------------------------------------------- */
+
+#audit-list li {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+#audit-list li:hover {
+  background: #1a212c;
+}
+
+#audit-list li.selected {
+  background: #1f2733;
+  border-left: 2px solid var(--accent);
+}
+
+/* -------------------------------------------------------------------
+   Envelope modal
+   ------------------------------------------------------------------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 11, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  width: min(820px, 100%);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #11151c;
+}
+
+.modal-head h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+}
+
+.modal-meta {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-meta .meta-route { color: var(--accent); }
+.modal-meta .meta-decision { margin-left: 8px; }
+.modal-meta .meta-decision.routed { color: var(--good); }
+.modal-meta .meta-decision.denied,
+.modal-meta .meta-decision.timeout { color: var(--bad); }
+.modal-meta .meta-decision.other { color: var(--warn); }
+
+.modal-btn {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.modal-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.modal-btn.copied {
+  color: var(--good);
+  border-color: var(--good);
+}
+
+#envelope-modal-close {
+  font-size: 16px;
+  line-height: 1;
+  padding: 1px 8px 3px;
+}
+
+#envelope-modal-body {
+  margin: 0;
+  padding: 12px 14px;
+  background: #0b0e13;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: auto;
+  flex: 1;
+  white-space: pre;
+  word-break: normal;
+}
+
+#envelope-modal-body code {
+  display: block;
+  white-space: pre;
+}
+
+/* Subtle JSON syntax tinting via spans the JS pretty-printer emits. */
+#envelope-modal-body .j-key    { color: var(--accent); }
+#envelope-modal-body .j-string { color: var(--good); }
+#envelope-modal-body .j-number { color: var(--warn); }
+#envelope-modal-body .j-bool   { color: #c4b5fd; }
+#envelope-modal-body .j-null   { color: var(--dim); }
