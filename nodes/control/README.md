@@ -4,22 +4,29 @@ Web app that registers as the `control` node, polls Core for the live topology,
 streams audit entries (when authorized), and lets you invoke any surface
 `control` has an outgoing edge to.
 
-## Install
+## Quickstart (recommended)
+
+```bash
+cd nodes/control
+./quickstart.sh
+```
+
+This script verifies node/npm/python3, runs `scripts/bootstrap.sh` if
+`hosts/coltons-mac/.env` is missing, installs npm deps, sources env,
+probes Core, and launches the server. Idempotent — safe to re-run.
+Ctrl-C to stop.
+
+## Manual install / run
 
 ```bash
 cd nodes/control
 npm install
-```
-
-`node_modules/` is gitignored — never commit it.
-
-## Run
-
-```bash
 CONTROL_SECRET=... CORE_URL=http://100.109.10.50:8000 npm start
 ```
 
 Then open <http://localhost:5190>.
+
+`node_modules/` is gitignored — never commit it.
 
 In normal use, env values come from `../../hosts/coltons-mac/.env` (the
 host-bootstrap script sources it). The two values you need are:
