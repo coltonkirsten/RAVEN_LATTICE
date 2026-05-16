@@ -25,6 +25,7 @@ set +a
 
 : "${ADMIN_TOKEN:?ADMIN_TOKEN is not set in ${ENV_FILE}}"
 : "${EDITH_SECRET:?EDITH_SECRET is not set in ${ENV_FILE}}"
+: "${RAVEN_SECRET:?RAVEN_SECRET is not set in ${ENV_FILE}}"
 
 if [[ ! -d "${RAVEN_MESH_DIR}" ]]; then
   echo "ERROR: RAVEN_MESH repo not found at ${RAVEN_MESH_DIR}" >&2

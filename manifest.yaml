@@ -25,8 +25,52 @@ nodes:
       host: coltons-mac
     surfaces: []
 
+  - id: raven
+    kind: actor
+    runtime: native
+    identity_secret: env:RAVEN_SECRET
+    metadata:
+      description: "RAVEN AI agent portal. Inbox lands in RAVEN's unified queue. Runs on Mac mini."
+      host: mac-mini
+    surfaces:
+      - name: message
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+
 relationships:
+  # Inbound to RAVEN portal: only control can wake RAVEN for now.
+  - from: control
+    to: raven.message
+
+  # Inbound to EDITH chat surface.
   - from: control
     to: edith.chat
+  - from: raven
+    to: edith.chat
+
+  # Core surfaces.
   - from: control
     to: core.audit_query
+  - from: raven
+    to: core.audit_query
+  - from: raven
+    to: core.state
+  - from: raven
+    to: core.processes
+  - from: raven
+    to: core.metrics
+  - from: raven
+    to: core.set_manifest
+  - from: raven
+    to: core.reload_manifest
+  - from: raven
+    to: core.spawn
+  - from: raven
+    to: core.stop
+  - from: raven
+    to: core.restart
+  - from: raven
+    to: core.reconcile
+  - from: raven
+    to: core.drain
