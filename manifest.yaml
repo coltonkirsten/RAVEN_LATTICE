@@ -47,8 +47,8 @@ nodes:
     runtime: native
     identity_secret: env:VOICE_SECRET
     metadata:
-      description: "gpt-realtime-2 voice node. Mic + speakers on Mac mini. Manual start_session via inspector at http://localhost:8807."
-      host: mac-mini
+      description: "gpt-realtime-2 voice node. Mic + speakers on Colton's Mac. Manual start_session via inspector at http://localhost:8807."
+      host: coltons-mac
     surfaces:
       # Tool surfaces (callable, request_response).
       - name: start_session
