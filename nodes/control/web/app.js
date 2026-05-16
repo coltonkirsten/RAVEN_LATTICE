@@ -104,6 +104,28 @@ function shouldFilterAuditEntry(entry) {
   return false;
 }
 
+function buildEdgeTitle(edges) {
+  const wrap = document.createElement("div");
+  wrap.className = "edge-tooltip";
+  const table = document.createElement("table");
+  for (const e of edges) {
+    const tr = document.createElement("tr");
+    const tdFrom = document.createElement("td");
+    tdFrom.className = "from";
+    tdFrom.textContent = e.from;
+    const tdArrow = document.createElement("td");
+    tdArrow.className = "arrow";
+    tdArrow.textContent = "→";
+    const tdTo = document.createElement("td");
+    tdTo.className = "to";
+    tdTo.textContent = e.to;
+    tr.append(tdFrom, tdArrow, tdTo);
+    table.appendChild(tr);
+  }
+  wrap.appendChild(table);
+  return wrap;
+}
+
 function colorForKind(kind, isCore) {
   if (isCore) return { background: "#374151", border: "#6b7280" };
   if (kind === "actor") return { background: "#1f3a2a", border: "#6ee7b7" };
@@ -146,21 +168,68 @@ function rebuildGraph(introspect) {
     });
   }
 
-  const edgeKeys = new Set();
-  const visEdges = [];
+  // Bundle edges by unordered node-pair so multiple surface relationships
+  // between the same two nodes collapse to a single visual edge. Self-loops
+  // (from === to) are bundled per-node.
+  const edgeBundles = new Map(); // pairKey -> { a, b, edges[], aToB, bToA }
+  const selfBundles = new Map(); // nodeId -> edges[]
   for (const e of edgesIn) {
     if (!e || !e.from || !e.to) continue;
+    const fromNode = String(e.from).split(".")[0];
     const toNode = String(e.to).split(".")[0];
-    const key = `${e.from}->${e.to}`;
-    if (edgeKeys.has(key)) continue;
-    edgeKeys.add(key);
+    if (fromNode === toNode) {
+      if (!selfBundles.has(fromNode)) selfBundles.set(fromNode, []);
+      selfBundles.get(fromNode).push(e);
+      continue;
+    }
+    const sorted = [fromNode, toNode].sort();
+    const pairKey = `${sorted[0]}|${sorted[1]}`;
+    let bundle = edgeBundles.get(pairKey);
+    if (!bundle) {
+      bundle = { a: sorted[0], b: sorted[1], edges: [], aToB: false, bToA: false };
+      edgeBundles.set(pairKey, bundle);
+    }
+    bundle.edges.push(e);
+    if (fromNode === sorted[0]) bundle.aToB = true;
+    else bundle.bToA = true;
+  }
+
+  const edgeKeys = new Set();
+  const visEdges = [];
+  const labelFont = {
+    color: "#d6deeb",
+    size: 11,
+    strokeWidth: 0,
+    background: "#161b22",
+    align: "middle",
+    face: "ui-monospace, Menlo, monospace",
+  };
+  for (const [pairKey, bundle] of edgeBundles) {
+    edgeKeys.add(pairKey);
     visEdges.push({
-      id: key,
-      from: e.from,
-      to: toNode,
-      label: String(e.to).split(".")[1] || "",
-      font: { color: "#8492a6", size: 10, strokeWidth: 0, align: "middle" },
-      title: `${e.from} → ${e.to}`,
+      id: pairKey,
+      from: bundle.a,
+      to: bundle.b,
+      label: String(bundle.edges.length),
+      font: labelFont,
+      title: buildEdgeTitle(bundle.edges),
+      arrows: {
+        to: { enabled: bundle.aToB, scaleFactor: 0.6 },
+        from: { enabled: bundle.bToA, scaleFactor: 0.6 },
+      },
+    });
+  }
+  for (const [nodeId, edges] of selfBundles) {
+    const selfKey = `${nodeId}|${nodeId}`;
+    edgeKeys.add(selfKey);
+    visEdges.push({
+      id: selfKey,
+      from: nodeId,
+      to: nodeId,
+      label: String(edges.length),
+      font: labelFont,
+      title: buildEdgeTitle(edges),
+      arrows: { to: { enabled: true, scaleFactor: 0.6 } },
     });
   }
 

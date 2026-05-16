@@ -368,3 +368,46 @@ main {
   color: var(--dim);
   border-top: 1px dashed var(--border);
 }
+
+/* vis.js tooltip — override default light theme so edge tooltips fit. */
+div.vis-tooltip {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  font-family: var(--mono) !important;
+}
+
+.edge-tooltip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  background: #0a0d12;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  max-width: 480px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.edge-tooltip table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.edge-tooltip td {
+  padding: 2px 6px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.edge-tooltip tr:nth-child(even) td {
+  background: #11161e;
+}
+
+.edge-tooltip .from { color: var(--accent); }
+.edge-tooltip .to   { color: var(--good); }
+.edge-tooltip .arrow {
+  color: var(--dim);
+  padding: 2px 4px;
+}
