@@ -1,10 +1,19 @@
 """EDITH — Sonnet 4.6 daily-driver node for the LATTICE mesh.
 
 Registers as 'edith', subscribes to /v0/stream, routes deliver events for
-the 'edith.chat' surface through Claude, and responds via /v0/respond.
+the 'edith.chat' surface through the Claude Code CLI, and responds via
+/v0/respond.
 
-Conversation history is held in-memory, keyed by conversation_id, capped
-at MAX_TURNS to prevent runaway memory.
+Why the CLI instead of the SDK?
+  Raw Anthropic SDK calls with an OAuth (oat01) token can trip Anthropic's
+  edge anti-abuse rate limiter even when usage buckets are well under quota.
+  The Claude Code CLI handles request shaping, retries, and backoff so its
+  traffic isn't flagged. EDITH spawns the CLI as a subprocess and parses
+  its stream-json output. CLAUDE_CODE_OAUTH_TOKEN is read from env by the
+  CLI automatically.
+
+Conversation continuity is handled via the CLI's --resume <session_id>
+flag. We keep a {conversation_id -> claude_session_id} map in memory.
 """
 from __future__ import annotations
 
@@ -18,7 +27,6 @@ import sys
 import uuid
 
 import aiohttp
-from anthropic import Anthropic, APIError
 
 
 CORE_URL = os.environ.get("CORE_URL", "http://host.docker.internal:8000")
@@ -26,19 +34,20 @@ NODE_ID = "edith"
 SURFACE = "edith.chat"
 SECRET = os.environ["EDITH_SECRET"].encode()
 MODEL = os.environ.get("EDITH_MODEL", "claude-sonnet-4-6")
-MAX_TURNS = 20
 
-# Auth: prefer Claude Code OAuth token (NEXUS-style, billed to Pro/Max
-# subscription). Fall back to ANTHROPIC_API_KEY only if no OAuth token set.
 OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+if not OAUTH_TOKEN:
+    print(
+        "[edith] FATAL: CLAUDE_CODE_OAUTH_TOKEN not set (required for CLI mode)",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
-# Claude Code's required system-prompt prefix when using an OAuth token —
-# the API gates oat01 tokens to this exact agent context. EDITH's persona
-# is appended underneath so Claude still responds as EDITH.
-CLAUDE_CODE_PREFIX = (
-    "You are Claude Code, Anthropic's official CLI for Claude."
-)
+AUTH_MODE = "oauth-cli"
+
+# EDITH persona — appended to Claude Code's required system prefix via
+# --append-system-prompt. The CLI handles the "You are Claude Code…"
+# prefix automatically when invoked with the OAuth token.
 EDITH_PERSONA = (
     "Operate as EDITH — Colton's daily-driver AI agent running on his Mac mini "
     "as a node in the LATTICE mesh. You are concise, capable, and dry-witted "
@@ -46,29 +55,9 @@ EDITH_PERSONA = (
     "for display in a chat panel."
 )
 
-if OAUTH_TOKEN:
-    SYSTEM_PROMPT = f"{CLAUDE_CODE_PREFIX}\n\n{EDITH_PERSONA}"
-    claude = Anthropic(
-        auth_token=OAUTH_TOKEN,
-        default_headers={
-            "anthropic-beta": "oauth-2025-04-20",
-            "User-Agent": "claude-cli/1.0",
-        },
-    )
-    AUTH_MODE = "oauth"
-elif API_KEY:
-    SYSTEM_PROMPT = EDITH_PERSONA
-    claude = Anthropic(api_key=API_KEY)
-    AUTH_MODE = "api_key"
-else:
-    print(
-        "[edith] FATAL: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY set",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-# conversation_id -> list of {"role": "user"|"assistant", "content": str}
-HISTORY: dict[str, list[dict]] = {}
+# conversation_id -> claude session_id (returned by CLI on first turn,
+# passed back via --resume on subsequent turns to preserve history)
+SESSIONS: dict[str, str] = {}
 
 
 def canonical(env: dict) -> bytes:
@@ -84,24 +73,82 @@ def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def call_claude(conversation_id: str, user_message: str) -> str:
-    history = HISTORY.setdefault(conversation_id, [])
-    history.append({"role": "user", "content": user_message})
+async def call_claude(conversation_id: str, user_message: str) -> str:
+    """Spawn the claude CLI and return its result text.
 
-    resp = claude.messages.create(
-        model=MODEL,
-        max_tokens=2048,
-        system=SYSTEM_PROMPT,
-        messages=history,
+    Uses --output-format stream-json so we can extract the final result
+    and the session_id for resume. The CLI inherits CLAUDE_CODE_OAUTH_TOKEN
+    from our env and uses it automatically.
+    """
+    args = [
+        "claude",
+        "-p", user_message,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--model", MODEL,
+        "--append-system-prompt", EDITH_PERSONA,
+        "--dangerously-skip-permissions",
+    ]
+    prior_session = SESSIONS.get(conversation_id)
+    if prior_session:
+        args.extend(["--resume", prior_session])
+
+    # Strip ANTHROPIC_API_KEY from the spawn env: when both are present
+    # the claude CLI prefers ANTHROPIC_API_KEY over CLAUDE_CODE_OAUTH_TOKEN,
+    # which routes to console.anthropic.com pay-as-you-go billing instead
+    # of the Max plan OAuth path. We want OAuth.
+    cli_env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    cli_env["HOME"] = cli_env.get("HOME", "/home/edith")
+
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd="/tmp",
+        env=cli_env,
     )
-    # Concatenate any text blocks in the response.
-    reply = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
-    history.append({"role": "assistant", "content": reply})
-    # Cap at MAX_TURNS user+assistant entries (2*MAX_TURNS messages).
-    if len(history) > 2 * MAX_TURNS:
-        del history[: len(history) - 2 * MAX_TURNS]
-    return reply
+    stdout_bytes, stderr_bytes = await proc.communicate()
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"claude CLI exited {proc.returncode}: {stderr.strip() or stdout.strip()}"
+        )
+
+    result_text = ""
+    new_session_id: str | None = None
+
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        mtype = msg.get("type")
+        if mtype == "system" and msg.get("subtype") == "init":
+            sid = msg.get("session_id")
+            if sid:
+                new_session_id = sid
+        elif mtype == "result":
+            if msg.get("result"):
+                result_text = msg["result"]
+            if msg.get("is_error") and msg.get("errors"):
+                errs = msg["errors"]
+                if isinstance(errs, list):
+                    result_text = "; ".join(str(e) for e in errs)
+
+    if new_session_id:
+        SESSIONS[conversation_id] = new_session_id
+
+    if not result_text:
+        # Last-ditch: try the raw stderr in case CLI wrote a useful message
+        result_text = stderr.strip() or "(empty response from claude CLI)"
+
+    return result_text
 
 
 async def respond(
@@ -145,25 +192,15 @@ async def handle_deliver(session: aiohttp.ClientSession, env: dict) -> None:
     )
 
     try:
-        reply = await asyncio.to_thread(call_claude, conv_id, user_message)
-    except APIError as e:
-        print(f"[edith] claude API error: {e}", file=sys.stderr, flush=True)
+        reply = await call_claude(conv_id, user_message)
+    except Exception as e:  # noqa: BLE001 — surface anything as error envelope
+        print(f"[edith] claude CLI error: {e!r}", file=sys.stderr, flush=True)
         await respond(
             session,
             to=invoker,
             correlation_id=msg_id,
             kind="error",
-            payload={"error": f"claude_api_error: {e}"},
-        )
-        return
-    except Exception as e:  # noqa: BLE001 — surface anything else as an error envelope
-        print(f"[edith] unexpected error: {e!r}", file=sys.stderr, flush=True)
-        await respond(
-            session,
-            to=invoker,
-            correlation_id=msg_id,
-            kind="error",
-            payload={"error": f"internal_error: {e!r}"},
+            payload={"error": f"claude_cli_error: {e}"},
         )
         return
 
