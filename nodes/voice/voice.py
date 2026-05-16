@@ -537,11 +537,21 @@ class Session:
                         "timestamp": now_iso(),
                     }
                     ok, body = await self._owner.mesh_invoke(info["target"], payload)
-                    output = {"ok": ok, "delivered_to": info["target"], "ack": body[:200]}
+                    # Don't truncate the ack here — the model needs the full
+                    # response (e.g. panel IDs from avp.list_panels) to chain
+                    # subsequent tool calls. Cap at 16 KB so a runaway
+                    # response can't blow up the response context.
+                    if isinstance(body, str) and len(body) > 16384:
+                        body = body[:16384] + f"…[truncated, total {len(body)} bytes]"
+                    output = {"ok": ok, "delivered_to": info["target"], "ack": body}
                 else:
                     payload = args.get("payload") or {}
                     ok, body = await self._owner.mesh_invoke(info["target"], payload)
-                    output = {"ok": ok, "delivered_to": info["target"], "ack": body[:200]}
+                    # Same: keep full response body so chained tool calls
+                    # (list → pick id → act on id) work.
+                    if isinstance(body, str) and len(body) > 16384:
+                        body = body[:16384] + f"…[truncated, total {len(body)} bytes]"
+                    output = {"ok": ok, "delivered_to": info["target"], "ack": body}
             except Exception as e:  # noqa: BLE001
                 output = {"error": True, "message": str(e)}
 

@@ -165,12 +165,36 @@ async def _build_panel(http: httpx.AsyncClient, payload: dict) -> dict:
 
 
 def _short(panel: dict) -> dict:
-    return {
+    # Include a short content preview so list_panels callers can identify
+    # which panel they made without a second round-trip. The preview is
+    # capped per-field to keep the response small even on scenes with
+    # many large panels; full panel content is still in the SceneDoc.
+    PREVIEW_MAX = 120
+    kind = panel.get("kind", "text")
+    out: dict = {
         "id": panel.get("id"),
-        "kind": panel.get("kind", "text"),
+        "kind": kind,
         "position": panel.get("transform", {}).get("position"),
         "size": panel.get("size"),
     }
+    # Pull the most relevant content field per kind. AVP's Panel schema
+    # uses different fields for different kinds (text/markdown -> text,
+    # html -> html, image/model3d -> url, chart/group -> data string).
+    content_field = {
+        "text": "text",
+        "markdown": "text",
+        "html": "html",
+        "image": "url",
+        "model3d": "url",
+        "chart": "data",
+        "mermaid": "text",
+        "group": "data",
+    }.get(kind)
+    if content_field:
+        val = panel.get(content_field)
+        if isinstance(val, str) and val:
+            out["preview"] = val[:PREVIEW_MAX] + ("…" if len(val) > PREVIEW_MAX else "")
+    return out
 
 
 # ---------------------------------------------------------------------------

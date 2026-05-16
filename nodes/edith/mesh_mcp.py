@@ -177,13 +177,21 @@ def invoke_mesh(to_node: str, surface: str, payload: dict) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             body = r.read().decode("utf-8", errors="replace")
+            # Cap at 16 KB so a runaway payload can't blow up the model's
+            # tool-result context, but allow real responses (panel lists,
+            # state dumps, audit windows) through intact instead of
+            # truncating at 200 chars and stripping IDs mid-string.
+            if len(body) > 16384:
+                body = body[:16384] + f"…[truncated, total {len(body)} bytes]"
             return True, (
                 f"Sent to {to_node}.{surface} (http={r.status}). "
-                f"id={msg_id} core_ack={body[:200]}"
+                f"id={msg_id} core_ack={body}"
             )
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        return False, f"mesh_invoke_error: HTTP {e.code} body={body[:300]}"
+        if len(body) > 8192:
+            body = body[:8192] + f"…[truncated, total {len(body)} bytes]"
+        return False, f"mesh_invoke_error: HTTP {e.code} body={body}"
     except Exception as e:  # noqa: BLE001
         return False, f"mesh_invoke_error: {e!r}"
 
