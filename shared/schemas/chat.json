@@ -3,7 +3,7 @@
   "title": "edith.chat input",
   "type": "object",
   "required": ["message"],
-  "additionalProperties": false,
+  "additionalProperties": true,
   "properties": {
     "message": {
       "type": "string",

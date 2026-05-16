@@ -415,11 +415,13 @@ class Session:
                 args = {}
             try:
                 if info["type"] == "inbox":
+                    # Accept either "message" (current) or "text" (legacy) so
+                    # the function can't stall on a model that's mid-migration.
+                    body = args.get("message") or args.get("text") or ""
                     payload = {
                         "from": NODE_ID,
                         "kind": "voice_handoff",
-                        "message": args.get("text", ""),
-                        "text": args.get("text", ""),
+                        "message": body,
                         "session_id": self.id,
                         "timestamp": now_iso(),
                     }
@@ -546,10 +548,10 @@ class VoiceNode:
                 params = {
                     "type": "object",
                     "properties": {
-                        "text": {"type": "string",
-                                 "description": "Message body — phrase as a task or question."},
+                        "message": {"type": "string",
+                                    "description": "Message body — phrase as a task or question."},
                     },
-                    "required": ["text"],
+                    "required": ["message"],
                 }
             elif stype == "tool" and mode == "request_response":
                 desc = (
