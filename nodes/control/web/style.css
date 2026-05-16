@@ -84,6 +84,37 @@ main {
   color: var(--dim);
   border-bottom: 1px solid var(--border);
   background: #11151c;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.refresh-btn {
+  margin-left: auto;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  font-family: var(--mono);
+  transition: transform 0.3s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.refresh-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.refresh-btn.spinning {
+  transform: rotate(360deg);
 }
 
 #topology { grid-area: topology; }

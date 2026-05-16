@@ -7,6 +7,7 @@ const MAX_AUDIT_ENTRIES = 500;
 const statusEl = document.getElementById("status");
 const auditListEl = document.getElementById("audit-list");
 const auditNoteEl = document.getElementById("audit-note");
+const auditRefreshBtn = document.getElementById("audit-refresh");
 const sendToEl = document.getElementById("send-to");
 const sendForm = document.getElementById("send-form");
 const sendPayloadEl = document.getElementById("send-payload");
@@ -40,6 +41,22 @@ const network = new vis.Network(
     interaction: { hover: true, tooltipDelay: 200, dragNodes: true, zoomView: true },
   }
 );
+
+// Freeze layout once initial stabilization completes — prevents the
+// visualizer from jumping every poll. Topology changes will re-enable
+// physics briefly via setPhysicsForTopologyChange().
+network.once("stabilizationIterationsDone", () => {
+  network.setOptions({ physics: { enabled: false } });
+});
+
+function setPhysicsForTopologyChange() {
+  network.setOptions({ physics: { enabled: true } });
+  // Let it re-stabilize then freeze again.
+  network.once("stabilizationIterationsDone", () => {
+    network.setOptions({ physics: { enabled: false } });
+  });
+  network.stabilize(80);
+}
 
 let lastNodeIds = new Set();
 let lastEdgeKeys = new Set();
@@ -112,13 +129,19 @@ function rebuildGraph(introspect) {
     [...nodeIds].some((id) => !lastNodeIds.has(id)) ||
     [...edgeKeys].some((k) => !lastEdgeKeys.has(k));
 
-  nodesDataset.clear();
-  nodesDataset.add(visNodes);
-  edgesDataset.clear();
-  edgesDataset.add(visEdges);
+  // Diff-update nodes: update existing in place (preserves layout positions),
+  // add new, remove gone.
+  const removedNodeIds = [...lastNodeIds].filter((id) => !nodeIds.has(id));
+  if (removedNodeIds.length) nodesDataset.remove(removedNodeIds);
+  nodesDataset.update(visNodes);
+
+  // Same for edges.
+  const removedEdgeKeys = [...lastEdgeKeys].filter((k) => !edgeKeys.has(k));
+  if (removedEdgeKeys.length) edgesDataset.remove(removedEdgeKeys);
+  edgesDataset.update(visEdges);
 
   if (topologyChanged) {
-    network.stabilize(80);
+    setPhysicsForTopologyChange();
   }
 
   lastNodeIds = nodeIds;
@@ -248,6 +271,21 @@ sendForm.addEventListener("submit", async (ev) => {
     btn.disabled = false;
   }
 });
+
+if (auditRefreshBtn) {
+  auditRefreshBtn.addEventListener("click", async () => {
+    auditRefreshBtn.disabled = true;
+    auditRefreshBtn.classList.add("spinning");
+    try {
+      await pollAudit();
+    } finally {
+      setTimeout(() => {
+        auditRefreshBtn.disabled = false;
+        auditRefreshBtn.classList.remove("spinning");
+      }, 300);
+    }
+  });
+}
 
 pollIntrospect();
 pollAudit();
