@@ -1,8 +1,12 @@
 """EDITH — Sonnet 4.6 daily-driver node for the LATTICE mesh.
 
 Registers as 'edith', subscribes to /v0/stream, routes deliver events for
-the 'edith.chat' surface through the Claude Code CLI, and responds via
-/v0/respond.
+the 'edith.chat' surface through the Claude Code CLI. The chat surface is
+declared `type: inbox, invocation_mode: fire_and_forget`, so Core acks the
+caller's /v0/invoke with 202 directly — EDITH does NOT call /v0/respond
+on the incoming envelope. To reply, EDITH issues a NEW signed invocation
+to the sender's own inbox surface (e.g. raven.message), so the reply is
+itself a first-class mesh message.
 
 Why the CLI instead of the SDK?
   Raw Anthropic SDK calls with an OAuth (oat01) token can trip Anthropic's
@@ -27,6 +31,7 @@ import sys
 import uuid
 
 import aiohttp
+import yaml
 
 
 CORE_URL = os.environ.get("CORE_URL", "http://host.docker.internal:8000")
@@ -63,9 +68,20 @@ EDITH_PERSONA = (
     "for display in a chat panel. You have mesh tools available "
     "(prefixed `mcp__lattice_mesh__mesh_*`) for sending messages to other "
     "nodes in the LATTICE mesh (e.g. `mesh_control_message` to notify "
-    "Colton's dashboard). Use them when the user asks you to send, notify, "
-    "or relay a message to another node. Tool returns confirm delivery to "
-    "Core, not the target's reply."
+    "Colton's dashboard). Tool returns confirm delivery to Core, not the "
+    "target's reply.\n\n"
+    "REPLY PROTOCOL — IMPORTANT. The chat surface you receive on is "
+    "fire-and-forget. The original sender does NOT get your prose back "
+    "automatically. Each incoming chat message will begin with a tag of "
+    "the form `[from: <sender_id>]` identifying the sender node. After you "
+    "compose your reply text, you MUST send it as a new mesh invocation to "
+    "that sender's inbox surface using the appropriate mesh tool: if the "
+    "tag says `[from: raven]`, call `mcp__lattice_mesh__mesh_raven_message` "
+    "with payload `{\"message\": \"<your reply>\"}`. If `[from: control]`, "
+    "use `mcp__lattice_mesh__mesh_control_message`. Do not skip this — "
+    "sending the reply via the mesh is how the user actually receives "
+    "your response. If you do not call the mesh tool, the user gets "
+    "nothing."
 )
 
 # conversation_id -> claude session_id (returned by CLI on first turn,
@@ -128,12 +144,13 @@ def _ensure_mcp_config() -> str | None:
         return None
 
 
-async def call_claude(conversation_id: str, user_message: str) -> str:
-    """Spawn the claude CLI and return its result text.
+async def call_claude(conversation_id: str, user_message: str) -> tuple[str, set[str]]:
+    """Spawn the claude CLI and return (result_text, mesh_tools_called).
 
-    Uses --output-format stream-json so we can extract the final result
-    and the session_id for resume. The CLI inherits CLAUDE_CODE_OAUTH_TOKEN
-    from our env and uses it automatically.
+    Uses --output-format stream-json so we can extract the final result,
+    the session_id for resume, and observe which `mcp__lattice_mesh__mesh_*`
+    tool_use blocks the CLI emitted. The CLI inherits
+    CLAUDE_CODE_OAUTH_TOKEN from our env and uses it automatically.
     """
     args = [
         "claude",
@@ -177,6 +194,10 @@ async def call_claude(conversation_id: str, user_message: str) -> str:
 
     result_text = ""
     new_session_id: str | None = None
+    # tool_use_id -> mesh tool name (only for our mesh tools)
+    mesh_calls: dict[str, str] = {}
+    # mesh tool names whose tool_result came back without is_error
+    mesh_tools_succeeded: set[str] = set()
 
     for line in stdout.splitlines():
         line = line.strip()
@@ -191,6 +212,27 @@ async def call_claude(conversation_id: str, user_message: str) -> str:
             sid = msg.get("session_id")
             if sid:
                 new_session_id = sid
+        elif mtype == "assistant":
+            inner = msg.get("message") or {}
+            for block in inner.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = str(block.get("name", ""))
+                if name.startswith("mcp__lattice_mesh__mesh_"):
+                    use_id = str(block.get("id", ""))
+                    if use_id:
+                        mesh_calls[use_id] = name
+        elif mtype == "user":
+            inner = msg.get("message") or {}
+            for block in inner.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                use_id = str(block.get("tool_use_id", ""))
+                name = mesh_calls.get(use_id)
+                if not name:
+                    continue
+                if not block.get("is_error"):
+                    mesh_tools_succeeded.add(name)
         elif mtype == "result":
             if msg.get("result"):
                 result_text = msg["result"]
@@ -206,31 +248,78 @@ async def call_claude(conversation_id: str, user_message: str) -> str:
         # Last-ditch: try the raw stderr in case CLI wrote a useful message
         result_text = stderr.strip() or "(empty response from claude CLI)"
 
-    return result_text
+    return result_text, mesh_tools_succeeded
 
 
-async def respond(
+def find_inbox_surface(node_id: str) -> str | None:
+    """Return surface name for the inbox surface of node_id, or None.
+
+    Manifest is re-read every call so newly-added inbox surfaces are
+    visible without restarting EDITH. Assumes a single inbox surface
+    per node (current LATTICE invariant).
+    """
+    try:
+        with open(MANIFEST_PATH) as f:
+            manifest = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        print(
+            f"[edith] manifest not found at {MANIFEST_PATH}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    for n in manifest.get("nodes") or []:
+        if n.get("id") != node_id:
+            continue
+        for s in n.get("surfaces") or []:
+            if s.get("type") == "inbox":
+                return s.get("name")
+    return None
+
+
+async def mesh_invoke(
     session: aiohttp.ClientSession,
     *,
     to: str,
-    correlation_id: str,
-    kind: str,
     payload: dict,
 ) -> None:
+    """POST a signed invocation envelope to Core /v0/invoke.
+
+    Used as the fallback reply path when the spawned CLI did not call a
+    `mcp__lattice_mesh__mesh_*` tool itself. `to` is a surface id like
+    `raven.message`.
+    """
+    msg_id = str(uuid.uuid4())
     env = {
-        "id": str(uuid.uuid4()),
-        "correlation_id": correlation_id,
+        "id": msg_id,
+        "correlation_id": msg_id,
         "from": NODE_ID,
         "to": to,
-        "kind": kind,
+        "kind": "invocation",
         "payload": payload,
         "timestamp": now_iso(),
     }
     env["signature"] = sign(env)
-    async with session.post(f"{CORE_URL}/v0/respond", json=env) as r:
-        if r.status != 200:
+    try:
+        async with session.post(f"{CORE_URL}/v0/invoke", json=env) as r:
             body = await r.text()
-            print(f"[edith] respond failed: {r.status} {body}", file=sys.stderr, flush=True)
+            if r.status not in (200, 202):
+                print(
+                    f"[edith] mesh_invoke to={to} failed: {r.status} {body[:200]}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[edith] mesh_invoke to={to} status={r.status}",
+                    flush=True,
+                )
+    except Exception as e:  # noqa: BLE001
+        print(
+            f"[edith] mesh_invoke to={to} crash: {e!r}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 async def handle_deliver(session: aiohttp.ClientSession, env: dict) -> None:
@@ -249,26 +338,61 @@ async def handle_deliver(session: aiohttp.ClientSession, env: dict) -> None:
         flush=True,
     )
 
+    # Tag the inbound message with the sender id so the CLI persona can
+    # route the reply to the right inbox tool (mesh_<sender>_<surface>).
+    tagged_message = f"[from: {invoker}] {user_message}"
+
     try:
-        reply = await call_claude(conv_id, user_message)
-    except Exception as e:  # noqa: BLE001 — surface anything as error envelope
+        reply, mesh_tools_succeeded = await call_claude(conv_id, tagged_message)
+    except Exception as e:  # noqa: BLE001
         print(f"[edith] claude CLI error: {e!r}", file=sys.stderr, flush=True)
-        await respond(
-            session,
-            to=invoker,
-            correlation_id=msg_id,
-            kind="error",
-            payload={"error": f"claude_cli_error: {e}"},
-        )
+        # Best-effort error reply to the sender's inbox surface.
+        target = find_inbox_surface(invoker)
+        if target:
+            await mesh_invoke(
+                session,
+                to=f"{invoker}.{target}",
+                payload={
+                    "message": f"[edith error] claude_cli_error: {e}",
+                    "in_reply_to": msg_id,
+                    "conversation_id": conv_id,
+                },
+            )
         return
 
-    print(f"[edith] reply len={len(reply)} chars", flush=True)
-    await respond(
+    target = find_inbox_surface(invoker)
+    expected_tool = f"mcp__lattice_mesh__mesh_{invoker}_{target}" if target else None
+    replied_via_cli = expected_tool is not None and expected_tool in mesh_tools_succeeded
+    print(
+        f"[edith] reply len={len(reply)} chars mesh_ok={sorted(mesh_tools_succeeded)} "
+        f"expected={expected_tool!r} replied_via_cli={replied_via_cli}",
+        flush=True,
+    )
+
+    if replied_via_cli:
+        # CLI already shipped the reply to the sender's inbox.
+        return
+
+    # Fallback: CLI either skipped the mesh tool entirely or routed to the
+    # wrong inbox. Deliver the prose reply directly to the sender's inbox
+    # so the protocol invariant ("inbox sender always gets a reply on
+    # their inbox") holds regardless of CLI behavior.
+    if not target:
+        print(
+            f"[edith] no inbox surface declared for {invoker!r}; "
+            "skipping fallback reply",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    await mesh_invoke(
         session,
-        to=invoker,
-        correlation_id=msg_id,
-        kind="response",
-        payload={"reply": reply},
+        to=f"{invoker}.{target}",
+        payload={
+            "message": reply,
+            "in_reply_to": msg_id,
+            "conversation_id": conv_id,
+        },
     )
 
 

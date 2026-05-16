@@ -12,8 +12,8 @@ nodes:
       host: mac-mini
     surfaces:
       - name: chat
-        type: tool
-        invocation_mode: request_response
+        type: inbox
+        invocation_mode: fire_and_forget
         schema: shared/schemas/chat.json
 
   - id: control
@@ -38,13 +38,17 @@ nodes:
       host: mac-mini
     surfaces:
       - name: message
-        type: tool
-        invocation_mode: request_response
+        type: inbox
+        invocation_mode: fire_and_forget
         schema: shared/schemas/permissive.json
 
 relationships:
-  # Inbound to RAVEN portal: only control can wake RAVEN for now.
+  # Inbound to RAVEN portal.
   - from: control
+    to: raven.message
+  # EDITH replies to chats by sending a new invocation to raven.message
+  # (fire-and-forget reply pattern — see SPEC § inbox protocol).
+  - from: edith
     to: raven.message
 
   # Inbound to control inbox: raven and edith can notify the control panel.

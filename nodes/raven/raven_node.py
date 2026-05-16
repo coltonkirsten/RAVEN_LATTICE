@@ -2,14 +2,15 @@
 
 Registers as 'raven' (actor kind), exposes the 'raven.message' surface.
 
-Inbound: lattice messages routed to raven.message are written into
-RAVEN's unified message queue (~/raven/data/message_queue.json), where
-the main RAVEN loop will pick them up alongside iMessages, cron tasks,
-and worker pickups. We respond immediately with kind=ack so the
-invoking node doesn't time out — the actual RAVEN reply will surface
-later via main loop output (sent through whatever channel RAVEN
-chooses, including potentially calling back into other lattice
-surfaces via this node's outbound invoke path).
+Inbound: raven.message is declared `type: inbox,
+invocation_mode: fire_and_forget`. Lattice messages routed to it are
+written into RAVEN's unified message queue (~/raven/data/message_queue.json),
+where the main RAVEN loop will pick them up alongside iMessages, cron
+tasks, and worker pickups. Core acks the caller's /v0/invoke with 202
+itself — the portal does NOT call /v0/respond. If RAVEN wants to reply,
+the main loop (or a task agent) drops a new invocation into
+lattice_outbox.json targeting the original sender's inbox surface, which
+this node drains and posts to /v0/invoke.
 
 Outbound: this node also exposes a local Unix-socket / HTTP control
 plane so RAVEN can send messages out to any other lattice surface.
@@ -95,34 +96,6 @@ def enqueue_lattice_message(from_node: str, payload: dict, correlation_id: str) 
     return msg_id
 
 
-async def respond(
-    session: aiohttp.ClientSession,
-    *,
-    to: str,
-    correlation_id: str,
-    kind: str,
-    payload: dict,
-) -> None:
-    env = {
-        "id": str(uuid.uuid4()),
-        "correlation_id": correlation_id,
-        "from": NODE_ID,
-        "to": to,
-        "kind": kind,
-        "payload": payload,
-        "timestamp": now_iso(),
-    }
-    env["signature"] = sign(env)
-    async with session.post(f"{CORE_URL}/v0/respond", json=env) as r:
-        if r.status != 200:
-            body = await r.text()
-            print(
-                f"[raven-node] respond failed: {r.status} {body}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-
 async def handle_deliver(session: aiohttp.ClientSession, env: dict) -> None:
     if env.get("to") != SURFACE:
         print(f"[raven-node] ignoring deliver to {env.get('to')!r}", flush=True)
@@ -138,30 +111,12 @@ async def handle_deliver(session: aiohttp.ClientSession, env: dict) -> None:
             f"[raven-node] queued lattice msg id={queue_id} from={invoker} corr={msg_id[:8]}",
             flush=True,
         )
-        # Core only accepts kind=response|error on /v0/respond. Send a
-        # synchronous "queued, RAVEN will follow up" response immediately
-        # so the invoking node doesn't time out; the real reply (if any)
-        # flows back later through the outbox -> /v0/invoke path.
-        await respond(
-            session,
-            to=invoker,
-            correlation_id=msg_id,
-            kind="response",
-            payload={
-                "queued": True,
-                "queue_id": queue_id,
-                "note": "RAVEN received your message. Reply will arrive asynchronously.",
-            },
-        )
+        # raven.message is fire_and_forget — Core already returned 202 to
+        # the caller. No /v0/respond. If RAVEN wants to reply, the main
+        # loop drops an invocation into lattice_outbox.json targeting the
+        # sender's inbox surface.
     except Exception as e:  # noqa: BLE001
         print(f"[raven-node] enqueue failed: {e!r}", file=sys.stderr, flush=True)
-        await respond(
-            session,
-            to=invoker,
-            correlation_id=msg_id,
-            kind="error",
-            payload={"error": f"enqueue_failed: {e!r}"},
-        )
 
 
 # ---------------------------------------------------------------------
