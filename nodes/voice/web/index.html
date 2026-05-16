@@ -75,6 +75,21 @@
   .queue-item:last-child { border-bottom: none; }
   .queue-kind { display: inline-block; min-width: 50px; color: #d1a162; font-weight: 600; }
   .queue-src { color: #6e7480; }
+  .sysmsg-box { background: #14161e; border: 1px solid #1f2129; border-radius: 4px;
+                padding: .6rem .75rem; font-family: ui-monospace, SFMono-Regular, monospace;
+                font-size: .78rem; max-height: 220px; overflow-y: auto;
+                white-space: pre-wrap; color: #d6d8e0; }
+  .sysmsg-header { display: flex; align-items: center; justify-content: space-between;
+                   margin-bottom: .4rem; gap: .5rem; }
+  .sysmsg-tag { font-size: .68rem; text-transform: uppercase; letter-spacing: .08em;
+                color: #6e7480; }
+  .sysmsg-tag.dirty { color: #d1a162; }
+  .sysmsg-tag.saved { color: #62d18b; }
+  textarea.sysmsg-edit { min-height: 120px; font-family: ui-monospace, SFMono-Regular, monospace;
+                          font-size: .8rem; }
+  .sysmsg-actions { display: flex; gap: .5rem; margin-top: .55rem; }
+  button.secondary { background: #1f2129; color: #aab0bc; border-color: #2a2e3a; }
+  button.secondary:hover { background: #2a2e3a; }
 </style>
 </head>
 <body>
@@ -109,6 +124,23 @@
     <hr/>
     <h2>Pending inbox queue</h2>
     <div id="queue" class="queue-list"><small class="muted">(empty)</small></div>
+    <hr/>
+    <h2>System message <span class="sysmsg-tag" id="sysmsg-status">loading…</span></h2>
+    <div class="sysmsg-header">
+      <span class="sysmsg-tag">resolved (live)</span>
+      <button type="button" class="secondary" id="sysmsg-reload-btn">Reload</button>
+    </div>
+    <div id="sysmsg-resolved" class="sysmsg-box"><small class="muted">loading…</small></div>
+    <div class="sysmsg-header" style="margin-top:.9rem">
+      <span class="sysmsg-tag">operator override (persisted)</span>
+      <span class="sysmsg-tag" id="sysmsg-chars">0 chars</span>
+    </div>
+    <textarea id="sysmsg-edit" class="sysmsg-edit"
+              placeholder="Leave empty to use the default prompt. Saved override applies on next start_session."></textarea>
+    <div class="sysmsg-actions">
+      <button type="button" id="sysmsg-save-btn">Save override</button>
+      <button type="button" class="secondary" id="sysmsg-reset-btn">Clear override</button>
+    </div>
     <hr/>
     <h2>Start a session</h2>
     <form id="start-form">
@@ -307,6 +339,78 @@
   fetch('/state').then(r => r.json()).then(applyState).catch(()=>{});
   const es = new EventSource('/events');
   es.addEventListener('state', (e) => { try { applyState(JSON.parse(e.data)); } catch(_) {} });
+
+  // ---------- System message (resolved + operator override) ----------
+  let lastSavedOverride = '';
+  function setSysmsgStatus(text, cls) {
+    const el = $('sysmsg-status');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'sysmsg-tag ' + (cls || '');
+  }
+  function refreshSysmsg() {
+    setSysmsgStatus('loading…', '');
+    fetch('/api/system_message').then(r => r.json()).then(data => {
+      const resolved = data.resolved || '(no prompt resolved)';
+      const override = data.override || '';
+      $('sysmsg-resolved').textContent = resolved;
+      const edit = $('sysmsg-edit');
+      if (document.activeElement !== edit) {
+        edit.value = override;
+      }
+      lastSavedOverride = override;
+      $('sysmsg-chars').textContent = (override.length) + ' chars';
+      if (data.session_active) {
+        setSysmsgStatus(data.override_set ? 'override active · session live' : 'default · session live', 'saved');
+      } else {
+        setSysmsgStatus(data.override_set ? 'override saved · idle' : 'default · idle', 'saved');
+      }
+    }).catch(err => {
+      $('sysmsg-resolved').innerHTML = '<small class="muted">failed to load: ' + (err && err.message || err) + '</small>';
+      setSysmsgStatus('error', 'dirty');
+    });
+  }
+  function saveSysmsg(reset) {
+    const body = reset ? { override: null } : { override: $('sysmsg-edit').value };
+    setSysmsgStatus('saving…', 'dirty');
+    fetch('/api/system_message', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    }).then(r => r.json()).then(res => {
+      if (res.error) {
+        setSysmsgStatus('error: ' + res.error, 'dirty');
+        return;
+      }
+      refreshSysmsg();
+    }).catch(err => {
+      setSysmsgStatus('error: ' + (err && err.message || err), 'dirty');
+    });
+  }
+  $('sysmsg-edit').addEventListener('input', () => {
+    const cur = $('sysmsg-edit').value;
+    $('sysmsg-chars').textContent = cur.length + ' chars';
+    if (cur !== lastSavedOverride) {
+      setSysmsgStatus('unsaved changes', 'dirty');
+    }
+  });
+  $('sysmsg-save-btn').addEventListener('click', () => saveSysmsg(false));
+  $('sysmsg-reset-btn').addEventListener('click', () => {
+    if (!confirm('Clear the operator override and fall back to the default prompt?')) return;
+    $('sysmsg-edit').value = '';
+    saveSysmsg(true);
+  });
+  $('sysmsg-reload-btn').addEventListener('click', refreshSysmsg);
+  refreshSysmsg();
+  // Also re-fetch when a session status flip happens (session_active changed).
+  let lastActive = null;
+  es.addEventListener('state', (e) => {
+    try {
+      const st = JSON.parse(e.data);
+      const a = !!st.active;
+      if (lastActive !== null && a !== lastActive) refreshSysmsg();
+      lastActive = a;
+    } catch(_) {}
+  });
 </script>
 </body>
 </html>

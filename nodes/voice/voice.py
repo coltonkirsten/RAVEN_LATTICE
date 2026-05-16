@@ -71,6 +71,30 @@ METER_PUSH_HZ = 20
 
 HTML_PATH = pathlib.Path(__file__).resolve().parent / "web" / "index.html"
 API_KEYS_PATH = pathlib.Path.home() / "raven" / "config" / "api_keys.json"
+# Persisted operator override for the system prompt. Survives node restart so
+# voice.set_system_message tweaks aren't lost when the process bounces.
+SYSTEM_OVERRIDE_PATH = pathlib.Path.home() / ".lattice" / "voice_system_override.txt"
+
+
+def load_system_override() -> Optional[str]:
+    try:
+        if SYSTEM_OVERRIDE_PATH.exists():
+            txt = SYSTEM_OVERRIDE_PATH.read_text().strip()
+            return txt or None
+    except Exception as e:  # noqa: BLE001
+        log.warning("system override read failed: %s", e)
+    return None
+
+
+def save_system_override(text: Optional[str]) -> None:
+    SYSTEM_OVERRIDE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if text is None or not text.strip():
+        try:
+            SYSTEM_OVERRIDE_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    SYSTEM_OVERRIDE_PATH.write_text(text.strip() + "\n")
 
 
 def now_iso() -> str:
@@ -143,6 +167,48 @@ class PendingQueue:
 
     def __len__(self) -> int:
         return len(self._q)
+
+
+# ---------------------------------------------------------------------
+# Per-target purpose hints — used to compose the voice system prompt.
+# Add a node here when its inbox/tool semantics change.
+# ---------------------------------------------------------------------
+
+_PURPOSE_HINTS: dict[tuple[str, str], str] = {
+    ("raven", "message"):
+        "RAVEN agent (Mac mini). Use for tasks needing reasoning, code, "
+        "iMessage to Colton, or background work over minutes-to-hours.",
+    ("edith", "chat"):
+        "EDITH (Sonnet 4.6 daily-driver). Use for quick conversational "
+        "asks, drafting, summarization, opinions. Replies arrive as a "
+        "separate `tell` turn — don't wait synchronously.",
+    ("control", "message"):
+        "Colton's dashboard inbox. Use for surfacing alerts, status, or "
+        "asks that should appear in his control panel UI.",
+    ("avp", "show"):
+        "AVP scene (visionOS). Use to push a text/markdown panel into "
+        "Colton's spatial scene. Argument message becomes the panel text.",
+    ("avp", "add_panel"):
+        "AVP scene — structured panel insertion (request_response). Only "
+        "use if the user asks for a specific panel kind (chart, model3d, "
+        "image, etc.). Otherwise prefer avp.show.",
+    ("avp", "remove_panel"):
+        "Remove a specific AVP panel by id. Only call when the user "
+        "names a panel to remove.",
+    ("avp", "list_panels"):
+        "Query the AVP scene contents. Use when the user asks what's in "
+        "their scene.",
+    ("browser", "query"):
+        "Browser-automation agent. Use for live web lookups, scraping, "
+        "or anything needing a real browser. Replies arrive separately.",
+}
+
+
+def _purpose_hint(node: str, surface: str) -> str:
+    return _PURPOSE_HINTS.get(
+        (node, surface),
+        f"({node}.{surface} — purpose not annotated)",
+    )
 
 
 # ---------------------------------------------------------------------
@@ -266,36 +332,74 @@ class Session:
             f"You are the voice surface of LATTICE node `{NODE_ID}`. Colton "
             "speaks into a microphone and hears your replies through the "
             "Mac mini speakers. Talk naturally — concise, friendly, dry. "
-            "Do not narrate what you are doing.",
+            "JARVIS-adjacent: confident, low-fluff, occasional dry wit. Do "
+            "not narrate your own internal steps.",
             "",
-            "You are part of a larger mesh of cooperating nodes. Other nodes "
-            "can do things you cannot — run code, edit files, drive UIs, ask "
-            "humans for approval. When a request needs more than conversation, "
-            "hand it off to the right node by calling the matching tool below. "
-            "After dispatching, briefly tell the user what you sent and to "
-            "whom. Don't fabricate results — wait for the node to respond "
-            "(it may come back as a follow-up turn injected by the system).",
+            "TOOL USE — read carefully:",
+            "You are part of a mesh of cooperating nodes. Other nodes can do "
+            "things you cannot — run code, edit files, drive scenes, look "
+            "things up. Use tools DELIBERATELY, not reflexively. The right "
+            "instinct: most user turns are conversation and need no tool at "
+            "all. A tool call should map to a clear request to do, change, "
+            "or look something up out in the world.",
+            "",
+            "Rules:",
+            "  1. Default to conversation. Only call a tool when the user is "
+            "     asking for an action or information that requires another "
+            "     node — not when they're chatting, thinking out loud, or "
+            "     asking you to clarify something you already said.",
+            "  2. Call AT MOST ONE tool per user turn. Pick the best target. "
+            "     Do not fan out the same message to multiple nodes.",
+            "  3. After a tool call, give the user a one-line spoken summary "
+            "     of what you dispatched and to whom. Don't read back the "
+            "     full message. Don't fabricate a result — fire-and-forget "
+            "     means you may never hear a direct reply; some nodes will "
+            "     speak back through a separate `tell` injection.",
+            "  4. If a tool fails, say so plainly and stop — don't retry "
+            "     against a different node hoping it sticks.",
+            "  5. The argument shape is `{message: <free-form text>}` for "
+            "     inbox tools. Phrase the message as a complete task or "
+            "     question — the receiving node has no other context.",
         ]
         if targets:
+            # Build a target-purpose guide so the model knows WHICH node to
+            # pick. This is descriptive prose rather than a raw tool list —
+            # the OpenAI Realtime tool schema is the canonical machine spec.
             lines.append("")
-            lines.append("Available mesh tools:")
+            lines.append("Available mesh tools (and what each is FOR):")
             for name, info in targets.items():
-                if info["type"] == "inbox":
-                    lines.append(
-                        f"  - {name}(text): hand off to "
-                        f"{info['node']}.{info['surface']} (fire-and-forget)."
-                    )
-                else:
-                    lines.append(
-                        f"  - {name}(payload): invoke "
-                        f"{info['node']}.{info['surface']} and use the response."
-                    )
+                purpose = _purpose_hint(info["node"], info["surface"])
+                arrow = "inbox" if info["type"] == "inbox" else "tool"
+                lines.append(
+                    f"  - {name} → {info['node']}.{info['surface']} ({arrow}): {purpose}"
+                )
+            lines.append("")
+            lines.append(
+                "Examples of mapping a user request to a tool:"
+            )
+            lines.append(
+                "  - \"send raven a note that the meeting moved to 4pm\" "
+                "→ send_raven_message"
+            )
+            lines.append(
+                "  - \"ask edith to draft a follow-up email\" → send_edith_chat"
+            )
+            lines.append(
+                "  - \"throw a markdown panel up in the AVP with my todo list\" "
+                "→ send_avp_show"
+            )
+            lines.append(
+                "  - \"what time is it\" → NO TOOL, just answer"
+            )
+            lines.append(
+                "  - \"thanks\" → NO TOOL, just acknowledge"
+            )
         else:
             lines.append("")
             lines.append("(No mesh tools available — conversational only.)")
         if self.system_prompt:
             lines.append("")
-            lines.append("Operator-supplied instructions:")
+            lines.append("Operator-supplied instructions (override / additional):")
             lines.append(self.system_prompt)
         return "\n".join(lines)
 
@@ -418,10 +522,17 @@ class Session:
                     # Accept either "message" (current) or "text" (legacy) so
                     # the function can't stall on a model that's mid-migration.
                     body = args.get("message") or args.get("text") or ""
+                    # Build a payload that satisfies every target's schema
+                    # without leaking a non-canonical `kind` into AVP. AVP's
+                    # SceneDoc Panel.kind is a strict Literal whitelist so we
+                    # do NOT pass kind from here — let AVP default to "text".
+                    # We populate BOTH "message" (raven/edith/control read this)
+                    # AND "text" (AVP's _build_panel reads this) so a single
+                    # envelope shape works across every inbox target.
                     payload = {
                         "from": NODE_ID,
-                        "kind": "voice_handoff",
                         "message": body,
+                        "text": body,
                         "session_id": self.id,
                         "timestamp": now_iso(),
                     }
@@ -464,6 +575,9 @@ class VoiceNode:
         self.pending = PendingQueue(maxlen=QUEUE_MAX)
         self.subscribers: set[asyncio.Queue] = set()
         self._lock = asyncio.Lock()
+        # Persisted operator override for the system prompt. None = use default.
+        # Loaded on boot, edited via voice.set_system_message or inspector POST.
+        self.system_override: Optional[str] = load_system_override()
 
     # ---------- mesh wiring ----------
 
@@ -591,6 +705,12 @@ class VoiceNode:
         elif surface == "session_status":
             result = await self.handle_session_status(env)
             await self.send_response(env, result)
+        elif surface == "get_system_message":
+            result = await self.handle_get_system_message(env)
+            await self.send_response(env, result)
+        elif surface == "set_system_message":
+            result = await self.handle_set_system_message(env)
+            await self.send_response(env, result)
         elif surface == "speak":
             await self.handle_speak(env)
         elif surface == "tell":
@@ -608,7 +728,10 @@ class VoiceNode:
         voice = body.get("voice") or DEFAULT_VOICE
         if voice not in SUPPORTED_VOICES:
             log.warning("voice %r not in canonical list; passing through anyway", voice)
-        system_prompt = body.get("system_prompt")
+        # Explicit per-session prompt wins; otherwise fall back to the
+        # persisted operator override (set via voice.set_system_message or
+        # the inspector UI).
+        system_prompt = body.get("system_prompt") or self.system_override
         user_transcript_target = body.get("on_user_transcript_target")
         in_dev = body.get("audio_input_device")
         out_dev = body.get("audio_output_device")
@@ -707,6 +830,73 @@ class VoiceNode:
             "pending_queue_size": len(self.pending),
             "last_user_transcript": s.last_user_transcript if s else None,
             "last_assistant_transcript": s.last_assistant_transcript if s else None,
+        }
+
+    async def _build_resolved_prompt(self) -> str:
+        """Build the system prompt as it would be sent to the model RIGHT NOW.
+
+        Used by voice.get_system_message and the inspector UI. Pulls live
+        mesh tools from Core /v0/introspect and applies the operator override.
+        If a session is live, returns the prompt that session is using; if
+        idle, returns what the NEXT session would use.
+        """
+        if self.session is not None:
+            # Mirror what the live session actually has loaded.
+            return self.session._build_instructions(self.session.mesh_targets)
+        targets, _ = await self._build_mesh_tools()
+        tmp = Session(
+            voice=DEFAULT_VOICE,
+            system_prompt=self.system_override,
+            on_user_transcript_target=None,
+            api_key=self.api_key or "(none)",
+            model=self.model,
+            owner=self,
+        )
+        return tmp._build_instructions(targets)
+
+    async def handle_get_system_message(self, env: dict) -> dict:
+        resolved = await self._build_resolved_prompt()
+        return {
+            "resolved": resolved,
+            "override": self.system_override,
+            "override_set": self.system_override is not None,
+            "session_active": self.session is not None,
+        }
+
+    async def handle_set_system_message(self, env: dict) -> dict:
+        payload = env.get("payload") or {}
+        # Accept several payload shapes: {message}, {text}, {override}, {system_message}
+        raw = (payload.get("override") if payload.get("override") is not None
+               else payload.get("system_message")
+               if payload.get("system_message") is not None
+               else payload.get("message")
+               if payload.get("message") is not None
+               else payload.get("text"))
+        if raw is None:
+            return {"error": "missing_override",
+                    "detail": "send {override: <text>} or null to reset"}
+        if isinstance(raw, str) and raw.strip() == "":
+            raw = None  # treat empty string as reset
+        try:
+            save_system_override(raw)
+        except Exception as e:  # noqa: BLE001
+            return {"error": "persist_failed", "detail": str(e)[:300]}
+        self.system_override = raw if isinstance(raw, str) and raw.strip() else None
+        # If a session is live, hot-apply by updating its system_prompt; the
+        # change will be visible in get_system_message and will take effect on
+        # next session start. (Realtime API doesn't support live instructions
+        # mutation without reconnect — caller can stop+start_session to apply.)
+        if self.session is not None:
+            self.session.system_prompt = self.system_override
+        await self.push()
+        return {
+            "ok": True,
+            "override_set": self.system_override is not None,
+            "override_chars": len(self.system_override or ""),
+            "note": ("stored. Active session is using the old prompt until "
+                     "stop_session + start_session — new sessions get the "
+                     "override automatically." if self.session is not None
+                     else "stored. Will apply on next start_session."),
         }
 
     async def handle_speak(self, env: dict) -> None:
@@ -869,6 +1059,15 @@ def make_web_app(node: VoiceNode) -> web.Application:
     async def http_devices(request: web.Request) -> web.Response:
         return web.json_response(list_devices())
 
+    async def http_get_system_message(request: web.Request) -> web.Response:
+        result = await node.handle_get_system_message({"payload": {}, "from": "inspector"})
+        return web.json_response(result)
+
+    async def http_set_system_message(request: web.Request) -> web.Response:
+        body = await request.json()
+        result = await node.handle_set_system_message({"payload": body, "from": "inspector"})
+        return web.json_response(result)
+
     app.router.add_get("/", index)
     app.router.add_get("/state", state)
     app.router.add_get("/events", events)
@@ -876,6 +1075,8 @@ def make_web_app(node: VoiceNode) -> web.Application:
     app.router.add_post("/api/start", http_start)
     app.router.add_post("/api/stop", http_stop)
     app.router.add_get("/api/status", http_status)
+    app.router.add_get("/api/system_message", http_get_system_message)
+    app.router.add_post("/api/system_message", http_set_system_message)
     return app
 
 

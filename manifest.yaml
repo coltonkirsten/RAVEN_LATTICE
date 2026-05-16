@@ -63,6 +63,18 @@ nodes:
         type: tool
         invocation_mode: request_response
         schema: shared/schemas/permissive.json
+      # Operator hot-tuning of the voice node's system prompt.
+      # get_system_message returns the fully resolved instructions string
+      # (built dynamically from mesh tools + operator override). set replaces
+      # the operator override and persists it to disk so it survives restart.
+      - name: get_system_message
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: set_system_message
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
       # Inbox surfaces (fire_and_forget). speak=verbatim, tell=conversational.
       - name: speak
         type: inbox
@@ -219,12 +231,24 @@ relationships:
     to: voice.stop_session
   - from: control
     to: voice.session_status
+  - from: control
+    to: voice.get_system_message
+  - from: control
+    to: voice.set_system_message
   - from: raven
     to: voice.start_session
   - from: raven
     to: voice.stop_session
   - from: raven
     to: voice.session_status
+  - from: raven
+    to: voice.get_system_message
+  - from: raven
+    to: voice.set_system_message
+  - from: edith
+    to: voice.get_system_message
+  - from: edith
+    to: voice.set_system_message
 
   # Inbound to avp: any peer can drive the scene.
   - from: raven
