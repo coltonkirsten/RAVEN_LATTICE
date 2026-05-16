@@ -1,0 +1,172 @@
+# Per-surface JSONSchema fragments for the avp node.
+#
+# Read by the LATTICE mesh MCP servers (raven-side server.py and the
+# EDITH-side mesh_mcp.py) at tools/list time. Each top-level key is a
+# surface name; the value is used VERBATIM as the tool's inputSchema
+# (replacing the legacy `{ payload }` wrapper). The MCP packs the entire
+# `arguments` object as the envelope payload when a typed schema exists.
+#
+# When a surface has no entry here, the MCP falls back to the legacy
+# `{ payload, conversation_id }` shape — so adding/omitting entries is
+# safe and incremental.
+#
+# Constraints reflect the actual scene server + avp_node.py behavior:
+#   - kind: only text|html are accepted by the upstream scene server
+#     (other kinds 422); avp_node.py builds the panel either way.
+#   - position: tuple [x,y,z]; meters; eye height ≈ 1.65.
+#   - size: tuple [w,h]; meters; default per-kind (see DEFAULT_SIZES).
+#   - near/near_offset: relative positioning vs an existing panel id.
+#   - data: JSON-encoded string for chart/group panels; dicts get
+#     auto-serialized server-side.
+
+show: &panel_payload
+  type: object
+  description: >-
+    Build a panel and add it to the visionOS scene. Fire-and-forget
+    (no reply). At least one of text/html/url/data should be set.
+  properties:
+    kind:
+      type: string
+      enum: [text, html]
+      default: text
+      description: >-
+        Panel kind. Only `text` and `html` are accepted by the scene
+        server (other kinds 422). For raw HTML use kind=html and set
+        the `html` field.
+    text:
+      type: string
+      description: Body text for kind=text panels.
+    html:
+      type: string
+      description: Body HTML for kind=html panels.
+    url:
+      type: string
+      description: Optional URL for image/model3d kinds.
+    data:
+      description: >-
+        JSON-encoded string for chart/group kinds. Dicts are
+        auto-serialized.
+      oneOf:
+        - { type: string }
+        - { type: object }
+    id:
+      type: string
+      description: >-
+        Optional panel id. If omitted, server assigns
+        `<kind>-<hex8>`. Set this if you intend to update/remove
+        the panel later.
+    position:
+      type: array
+      description: >-
+        World position [x, y, z] in meters. Default landing spot
+        is [0, 1.65, -1.3] (eye height, ~1.3m forward).
+      items: { type: number }
+      minItems: 3
+      maxItems: 3
+    near:
+      type: string
+      description: >-
+        Place this panel relative to an existing panel id. Mutually
+        exclusive with `position` (position wins if both set).
+    near_offset:
+      type: array
+      description: >-
+        Offset [dx, dy, dz] applied to `near` target's position.
+        Defaults to [0.55, 0, 0] (a bit to the right).
+      items: { type: number }
+      minItems: 3
+      maxItems: 3
+    size:
+      type: array
+      description: >-
+        Panel size [width, height] in meters. Defaults per-kind
+        (text=[0.5,0.4], html=[0.7,0.5]).
+      items: { type: number }
+      minItems: 2
+      maxItems: 2
+    rotation_yaw_degrees:
+      type: number
+      description: Optional yaw rotation in degrees.
+    style:
+      type: object
+      description: Pass-through style dict (font, background, etc.).
+      additionalProperties: true
+    conversation_id:
+      type: string
+      description: Optional threading hint folded into the envelope payload.
+  additionalProperties: false
+
+add_panel: *panel_payload
+
+update_panel:
+  type: object
+  description: >-
+    Merge a partial update into an existing panel by id. Accepts either
+    `{id, patch: {…}}` (preferred — patch is the merge body) or flat
+    form `{id, text, html, size, transform, …}` (any non-id keys become
+    the patch).
+  required: [id]
+  properties:
+    id:
+      type: string
+      description: Panel id to update (returned by add_panel / list_panels).
+    patch:
+      type: object
+      description: >-
+        Explicit patch object. If omitted, all non-id top-level fields
+        below are merged into the patch.
+      additionalProperties: true
+    text: { type: string }
+    html: { type: string }
+    url: { type: string }
+    data:
+      oneOf:
+        - { type: string }
+        - { type: object }
+    transform:
+      type: object
+      description: Partial transform merge (position/rotation/scale).
+      additionalProperties: true
+    size:
+      type: object
+      description: Partial size merge {width, height}.
+      properties:
+        width: { type: number }
+        height: { type: number }
+      additionalProperties: false
+    style:
+      type: object
+      additionalProperties: true
+    conversation_id:
+      type: string
+  additionalProperties: false
+
+remove_panel:
+  type: object
+  description: Remove a panel from the scene by id.
+  required: [id]
+  properties:
+    id:
+      type: string
+      description: Panel id to remove (returned by add_panel / list_panels).
+    conversation_id:
+      type: string
+  additionalProperties: false
+
+list_panels:
+  type: object
+  description: >-
+    List the current scene's panels in short form
+    [{id, kind, position, size, preview?}, …]. No required fields.
+  properties:
+    conversation_id:
+      type: string
+  additionalProperties: false
+
+clear_scene:
+  type: object
+  description: Replace the scene's panels with []. No required fields.
+  properties:
+    conversation_id:
+      type: string
+  additionalProperties: false
