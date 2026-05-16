@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "edith.chat input",
+  "type": "object",
+  "required": ["message"],
+  "additionalProperties": false,
+  "properties": {
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "description": "User message to send to EDITH."
+    },
+    "conversation_id": {
+      "type": "string",
+      "description": "Optional conversation thread id for multi-turn context."
+    }
+  }
+}

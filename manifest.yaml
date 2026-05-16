@@ -1,0 +1,30 @@
+# LATTICE manifest — declares the mesh topology.
+# Loaded by RAVEN_MESH Core on the Mac mini.
+# Edit this file to add nodes, surfaces, or edges; reload via core.reload_manifest.
+
+nodes:
+  - id: edith
+    kind: capability
+    runtime: docker
+    identity_secret: env:EDITH_SECRET
+    metadata:
+      description: "Sonnet 4.6 agent. Daily-driver assistant. Runs on Mac mini."
+      host: mac-mini
+    surfaces:
+      - name: chat
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/chat.json
+
+  - id: control
+    kind: actor
+    runtime: web
+    identity_secret: env:CONTROL_SECRET
+    metadata:
+      description: "Web dashboard. Colton's interactive control panel. Runs on Colton's Mac."
+      host: coltons-mac
+    surfaces: []
+
+relationships:
+  - from: control
+    to: edith.chat
