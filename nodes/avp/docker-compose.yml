@@ -1,0 +1,18 @@
+services:
+  avp:
+    build: .
+    container_name: lattice-avp
+    restart: unless-stopped
+    env_file:
+      - ../../hosts/mac-mini/.env
+    environment:
+      - AVP_SECRET=${AVP_SECRET:?AVP_SECRET must be set in ../../hosts/mac-mini/.env}
+      - CORE_URL=${CORE_URL:-http://host.docker.internal:8000}
+      # AVP_BASE_URL — the FastAPI scene server on Colton's Mac. Default
+      # is the Tailscale IP so this works regardless of whether the
+      # container can reach the host bridge; host.docker.internal is the
+      # fallback for local-only testing.
+      - AVP_BASE_URL=${AVP_BASE_URL:-http://100.109.10.50:5180}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    network_mode: bridge

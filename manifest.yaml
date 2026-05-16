@@ -73,6 +73,39 @@ nodes:
         invocation_mode: fire_and_forget
         schema: shared/schemas/permissive.json
 
+  - id: avp
+    kind: actor
+    runtime: docker
+    identity_secret: env:AVP_SECRET
+    metadata:
+      description: "RAVEN_AVP scene proxy. Translates mesh envelopes into HTTPX calls to the FastAPI scene server (coltons-mac:5180). Runs on Mac mini."
+      host: mac-mini
+    surfaces:
+      - name: show
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
+      - name: add_panel
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: update_panel
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: remove_panel
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: list_panels
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: clear_scene
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+
 relationships:
   # Inbound to RAVEN portal.
   - from: control
@@ -158,3 +191,44 @@ relationships:
     to: voice.stop_session
   - from: raven
     to: voice.session_status
+
+  # Inbound to avp: any peer can drive the scene.
+  - from: raven
+    to: avp.show
+  - from: raven
+    to: avp.add_panel
+  - from: raven
+    to: avp.update_panel
+  - from: raven
+    to: avp.remove_panel
+  - from: raven
+    to: avp.list_panels
+  - from: raven
+    to: avp.clear_scene
+
+  - from: edith
+    to: avp.show
+  - from: edith
+    to: avp.add_panel
+  - from: edith
+    to: avp.update_panel
+  - from: edith
+    to: avp.remove_panel
+  - from: edith
+    to: avp.list_panels
+  - from: edith
+    to: avp.clear_scene
+
+  - from: voice
+    to: avp.show
+  - from: voice
+    to: avp.add_panel
+  - from: voice
+    to: avp.remove_panel
+  - from: voice
+    to: avp.list_panels
+
+  # avp reaches back to RAVEN to notify of out-of-band scene events
+  # (e.g. panel deleted by the user). Optional but useful.
+  - from: avp
+    to: raven.message
