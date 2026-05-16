@@ -1,0 +1,34 @@
+# Secrets — never commit
+*.env
+.env
+.env.local
+secrets.yaml
+shared/secrets.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+build/
+.DS_Store
+
+# Logs
+*.log
+.logs/
+.pids/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
