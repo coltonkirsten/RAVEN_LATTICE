@@ -29,6 +29,7 @@ write_mac_mini_env() {
 ADMIN_TOKEN=${admin_token}
 EDITH_SECRET=${edith_secret}
 ANTHROPIC_API_KEY=
+CORE_URL=http://100.109.10.50:8000
 EOF
   chmod 600 "${MAC_MINI_ENV}"
   echo "[ok]   wrote ${MAC_MINI_ENV}"

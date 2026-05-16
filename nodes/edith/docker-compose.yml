@@ -7,8 +7,12 @@ services:
       - ../../hosts/mac-mini/.env
     environment:
       - EDITH_SECRET=${EDITH_SECRET:?EDITH_SECRET must be set in ../../hosts/mac-mini/.env}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set}
+      # Auth: CLAUDE_CODE_OAUTH_TOKEN preferred (NEXUS-style, Pro/Max billing).
+      # ANTHROPIC_API_KEY is the fallback; one of the two must be set.
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CORE_URL=${CORE_URL:-http://host.docker.internal:8000}
+      - EDITH_MODEL=${EDITH_MODEL:-claude-sonnet-4-6}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     network_mode: bridge

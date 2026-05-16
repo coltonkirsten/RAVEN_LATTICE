@@ -28,17 +28,47 @@ SECRET = os.environ["EDITH_SECRET"].encode()
 MODEL = os.environ.get("EDITH_MODEL", "claude-sonnet-4-6")
 MAX_TURNS = 20
 
-SYSTEM_PROMPT = (
-    "You are EDITH, Colton's daily-driver AI agent running on his Mac mini "
+# Auth: prefer Claude Code OAuth token (NEXUS-style, billed to Pro/Max
+# subscription). Fall back to ANTHROPIC_API_KEY only if no OAuth token set.
+OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+
+# Claude Code's required system-prompt prefix when using an OAuth token —
+# the API gates oat01 tokens to this exact agent context. EDITH's persona
+# is appended underneath so Claude still responds as EDITH.
+CLAUDE_CODE_PREFIX = (
+    "You are Claude Code, Anthropic's official CLI for Claude."
+)
+EDITH_PERSONA = (
+    "Operate as EDITH — Colton's daily-driver AI agent running on his Mac mini "
     "as a node in the LATTICE mesh. You are concise, capable, and dry-witted "
     "(think JARVIS). Match the user's energy. Respond in plain text suitable "
     "for display in a chat panel."
 )
 
+if OAUTH_TOKEN:
+    SYSTEM_PROMPT = f"{CLAUDE_CODE_PREFIX}\n\n{EDITH_PERSONA}"
+    claude = Anthropic(
+        auth_token=OAUTH_TOKEN,
+        default_headers={
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-cli/1.0",
+        },
+    )
+    AUTH_MODE = "oauth"
+elif API_KEY:
+    SYSTEM_PROMPT = EDITH_PERSONA
+    claude = Anthropic(api_key=API_KEY)
+    AUTH_MODE = "api_key"
+else:
+    print(
+        "[edith] FATAL: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY set",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 # conversation_id -> list of {"role": "user"|"assistant", "content": str}
 HISTORY: dict[str, list[dict]] = {}
-
-claude = Anthropic()  # picks up ANTHROPIC_API_KEY from env
 
 
 def canonical(env: dict) -> bytes:
@@ -157,7 +187,10 @@ async def main() -> None:
                 sys.exit(1)
             reg_resp = await r.json()
         session_id = reg_resp["session_id"]
-        print(f"[edith] registered session={session_id[:8]} model={MODEL}", flush=True)
+        print(
+            f"[edith] registered session={session_id[:8]} model={MODEL} auth={AUTH_MODE}",
+            flush=True,
+        )
 
         async with s.get(
             f"{CORE_URL}/v0/stream",
