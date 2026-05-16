@@ -28,3 +28,5 @@ nodes:
 relationships:
   - from: control
     to: edith.chat
+  - from: control
+    to: core.audit_query
