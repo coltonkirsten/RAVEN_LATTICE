@@ -106,6 +106,27 @@ nodes:
         invocation_mode: request_response
         schema: shared/schemas/permissive.json
 
+  - id: avp_voice
+    kind: actor
+    runtime: docker
+    identity_secret: env:AVP_VOICE_SECRET
+    metadata:
+      description: "RAVEN_AVP voice-control proxy. Translates mesh envelopes into HTTPX calls to the visionOS voice-control HTTP server (100.109.10.50:5181). Runs on Mac mini."
+      host: mac-mini
+    surfaces:
+      - name: status
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: start_session
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: stop_session
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+
 relationships:
   # Inbound to RAVEN portal.
   - from: control
@@ -232,3 +253,25 @@ relationships:
   # (e.g. panel deleted by the user). Optional but useful.
   - from: avp
     to: raven.message
+
+  # Inbound to avp_voice: raven, edith, and control can drive voice sessions.
+  - from: raven
+    to: avp_voice.status
+  - from: raven
+    to: avp_voice.start_session
+  - from: raven
+    to: avp_voice.stop_session
+
+  - from: edith
+    to: avp_voice.status
+  - from: edith
+    to: avp_voice.start_session
+  - from: edith
+    to: avp_voice.stop_session
+
+  - from: control
+    to: avp_voice.status
+  - from: control
+    to: avp_voice.start_session
+  - from: control
+    to: avp_voice.stop_session

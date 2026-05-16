@@ -1,0 +1,17 @@
+services:
+  avp_voice:
+    build: .
+    container_name: lattice-avp-voice
+    restart: unless-stopped
+    env_file:
+      - ../../hosts/mac-mini/.env
+    environment:
+      - AVP_VOICE_SECRET=${AVP_VOICE_SECRET:?AVP_VOICE_SECRET must be set in ../../hosts/mac-mini/.env}
+      - CORE_URL=${CORE_URL:-http://host.docker.internal:8000}
+      # AVP_VOICE_BASE_URL — the visionOS voice-control HTTP server on
+      # the Vision Pro. Default is the Tailscale IP so this works
+      # regardless of host-bridge resolution.
+      - AVP_VOICE_BASE_URL=${AVP_VOICE_BASE_URL:-http://100.109.10.50:5181}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    network_mode: bridge
