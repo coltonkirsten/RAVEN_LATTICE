@@ -35,6 +35,14 @@ fi
 export VOICE_SECRET CORE_URL OPENAI_API_KEY
 
 cd "$HERE"
-# python3 resolves to the venv interpreter when this script is launched
-# from an active venv (recommended path via quickstart_voice.sh).
-exec python3 -u voice.py
+# Prefer the local venv's python when present. nohup/background launches
+# from quickstart_voice.sh don't reliably preserve venv activation in PATH,
+# so resolve the interpreter explicitly.
+VENV_PY="$HERE/.venv/bin/python3"
+if [[ -x "$VENV_PY" ]]; then
+  echo "[voice] using venv python: $VENV_PY"
+  exec "$VENV_PY" -u voice.py
+else
+  echo "[voice] no venv found at $VENV_PY; falling back to system python3" >&2
+  exec python3 -u voice.py
+fi
