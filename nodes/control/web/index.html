@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LATTICE — Control</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  </head>
+  <body>
+    <header>
+      <span class="logo">LATTICE</span>
+      <span class="sub">control panel</span>
+      <span id="status" class="status">connecting…</span>
+    </header>
+
+    <main>
+      <section id="topology" class="panel">
+        <h2>topology</h2>
+        <div id="graph"></div>
+      </section>
+
+      <section id="audit" class="panel">
+        <h2>audit log</h2>
+        <ul id="audit-list"></ul>
+        <div id="audit-note" class="note"></div>
+      </section>
+
+      <section id="send" class="panel">
+        <h2>send</h2>
+        <form id="send-form">
+          <label>
+            <span>to</span>
+            <select id="send-to"></select>
+          </label>
+          <label>
+            <span>payload (JSON)</span>
+            <textarea id="send-payload" rows="6" spellcheck="false">{"message":"hello"}</textarea>
+          </label>
+          <button type="submit">invoke</button>
+        </form>
+        <pre id="send-response"></pre>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
