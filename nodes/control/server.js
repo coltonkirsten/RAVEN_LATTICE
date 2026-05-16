@@ -1,5 +1,6 @@
 import express from "express";
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fetch from "node-fetch";
@@ -7,9 +8,11 @@ import fetch from "node-fetch";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const NODE_ID = "control";
+const INBOX_SURFACE = "control.message";
 const CORE_URL = process.env.CORE_URL || "http://100.109.10.50:8000";
 const PORT = parseInt(process.env.PORT || "5190", 10);
 const SECRET = process.env.CONTROL_SECRET;
+const INBOX_PATH = process.env.CONTROL_INBOX_PATH || path.join(__dirname, "inbox.json");
 
 if (!SECRET) {
   console.error("[control] CONTROL_SECRET env var is required");
@@ -67,6 +70,21 @@ async function register() {
   return json;
 }
 
+function parseSseFrame(frame) {
+  let eventType = null;
+  const dataLines = [];
+  for (const raw of frame.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("event:")) {
+      eventType = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).replace(/^ /, ""));
+    }
+  }
+  return { eventType, data: dataLines.join("\n") };
+}
+
 function startSseConsumer() {
   if (!SESSION_ID) return;
   const url = `${CORE_URL}/v0/stream?session=${encodeURIComponent(SESSION_ID)}`;
@@ -86,7 +104,20 @@ function startSseConsumer() {
         while ((idx = buf.indexOf("\n\n")) !== -1) {
           const frame = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
-          if (frame.startsWith(":")) continue;
+          if (!frame) continue;
+          const { eventType, data } = parseSseFrame(frame);
+          if (eventType === "deliver" && data) {
+            let envelope;
+            try {
+              envelope = JSON.parse(data);
+            } catch (e) {
+              console.error("[control] deliver parse error:", e.message);
+              continue;
+            }
+            handleDeliver(envelope).catch((err) => {
+              console.error("[control] deliver handler crashed:", err.message);
+            });
+          }
         }
       }
       console.warn("[control] SSE stream ended; reconnecting");
@@ -96,6 +127,81 @@ function startSseConsumer() {
       console.error("[control] SSE error:", err.message);
       scheduleReconnect();
     });
+}
+
+// ---------------------------------------------------------------------
+// INBOX: persistence + delivery handler
+// ---------------------------------------------------------------------
+// Core verifies the sender's HMAC signature before pushing a `deliver`
+// event over our SSE stream, so the SSE channel itself is the trust
+// boundary. We don't have other nodes' identity secrets and therefore
+// can't re-verify their signatures here — we accept what Core delivers.
+
+let inboxWriteChain = Promise.resolve();
+
+async function readInbox() {
+  try {
+    const raw = await fs.readFile(INBOX_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw e;
+  }
+}
+
+async function writeInboxAtomic(arr) {
+  const tmp = `${INBOX_PATH}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(arr, null, 2), "utf8");
+  await fs.rename(tmp, INBOX_PATH);
+}
+
+function withInbox(mutator) {
+  // Serialize all inbox mutations to avoid lost updates between concurrent
+  // SSE deliveries and HTTP API writes.
+  const next = inboxWriteChain.then(async () => {
+    const current = await readInbox();
+    const updated = await mutator(current);
+    if (updated !== undefined) {
+      await writeInboxAtomic(updated);
+      return updated;
+    }
+    return current;
+  });
+  inboxWriteChain = next.catch(() => {});
+  return next;
+}
+
+async function initInbox() {
+  try {
+    await fs.access(INBOX_PATH);
+  } catch {
+    await writeInboxAtomic([]);
+    console.log(`[control] initialized inbox at ${INBOX_PATH}`);
+  }
+}
+
+async function handleDeliver(envelope) {
+  if (envelope?.to !== INBOX_SURFACE) {
+    return; // not for us
+  }
+  const entry = {
+    id: envelope.id,
+    correlation_id: envelope.correlation_id,
+    from: envelope.from,
+    to: envelope.to,
+    kind: envelope.kind,
+    payload: envelope.payload ?? {},
+    sender_timestamp: envelope.timestamp,
+    received_at: nowIso(),
+    read: false,
+  };
+  await withInbox((arr) => {
+    if (arr.some((e) => e.id === entry.id)) return undefined; // dedupe replays
+    arr.push(entry);
+    return arr;
+  });
+  console.log(`[control] inbox <- from=${entry.from} id=${String(entry.id).slice(0, 8)}`);
 }
 
 let reconnectTimer = null;
@@ -216,7 +322,53 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+app.get("/api/inbox", async (_req, res) => {
+  try {
+    const arr = await readInbox();
+    // Storage order is chronological (writes are serialized through
+    // inboxWriteChain), so reverse for newest-first. received_at is
+    // second-precision and can tie within a single second.
+    res.json({ inbox: [...arr].reverse() });
+  } catch (e) {
+    res.status(500).json({ error: "inbox_read_failed", detail: e.message });
+  }
+});
+
+app.post("/api/inbox/:id/read", async (req, res) => {
+  const { id } = req.params;
+  try {
+    let found = false;
+    await withInbox((arr) => {
+      for (const entry of arr) {
+        if (entry.id === id) {
+          entry.read = true;
+          found = true;
+        }
+      }
+      return found ? arr : undefined;
+    });
+    if (!found) return res.status(404).json({ error: "not_found" });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: "inbox_mark_read_failed", detail: e.message });
+  }
+});
+
+app.post("/api/inbox/clear", async (_req, res) => {
+  try {
+    let cleared = 0;
+    await withInbox((arr) => {
+      cleared = arr.length;
+      return [];
+    });
+    res.json({ ok: true, cleared });
+  } catch (e) {
+    res.status(500).json({ error: "inbox_clear_failed", detail: e.message });
+  }
+});
+
 (async () => {
+  await initInbox();
   try {
     await register();
   } catch (e) {

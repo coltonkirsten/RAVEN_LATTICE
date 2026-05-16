@@ -54,11 +54,11 @@ header {
 
 main {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: 2fr 1fr 1fr;
   grid-template-rows: 1fr 1fr;
   grid-template-areas:
-    "topology topology"
-    "audit    send";
+    "topology topology topology"
+    "audit    inbox    send";
   gap: 10px;
   padding: 10px;
   height: calc(100vh - 44px);
@@ -119,6 +119,7 @@ main {
 
 #topology { grid-area: topology; }
 #audit    { grid-area: audit; }
+#inbox    { grid-area: inbox; }
 #send     { grid-area: send; }
 
 #graph {
@@ -215,4 +216,155 @@ main {
   flex: 1;
   overflow: auto;
   white-space: pre-wrap;
+}
+
+.audit-filter-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: none;
+  color: var(--dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.audit-filter-toggle input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.audit-filter-toggle:hover {
+  color: var(--text);
+}
+
+#audit .refresh-btn {
+  margin-left: 8px;
+}
+
+.inbox-clear-btn {
+  margin-left: auto;
+  background: transparent;
+  color: var(--bad);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  font-family: var(--mono);
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.inbox-clear-btn:hover {
+  border-color: var(--bad);
+  color: var(--text);
+}
+
+.inbox-clear-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+#inbox-list {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+#inbox-list li {
+  padding: 8px 12px;
+  border-bottom: 1px solid #1f2530;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+#inbox-list li:hover {
+  background: #1a212c;
+}
+
+#inbox-list li.unread {
+  background: #131b27;
+  border-left: 2px solid var(--accent);
+}
+
+#inbox-list li.unread .inbox-from {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+#inbox-list li.flash {
+  animation: inbox-flash 1.2s ease-out;
+}
+
+@keyframes inbox-flash {
+  0%   { background: rgba(108, 176, 255, 0.35); }
+  100% { background: transparent; }
+}
+
+.inbox-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.inbox-from { color: var(--text); }
+.inbox-ts   { color: var(--dim); font-size: 11px; margin-left: auto; }
+
+.inbox-text {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.inbox-raw {
+  margin-top: 4px;
+}
+
+.inbox-raw summary {
+  cursor: pointer;
+  color: var(--dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.inbox-raw pre {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  background: #0b0e13;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--dim);
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.unread-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #0a0d12;
+  background: var(--accent);
+  border-radius: 8px;
+  letter-spacing: 0;
+}
+
+#inbox-empty {
+  color: var(--dim);
+  border-top: 1px dashed var(--border);
 }

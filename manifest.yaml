@@ -23,7 +23,11 @@ nodes:
     metadata:
       description: "Web dashboard. Colton's interactive control panel. Runs on Colton's Mac."
       host: coltons-mac
-    surfaces: []
+    surfaces:
+      - name: message
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
 
   - id: raven
     kind: actor
@@ -42,6 +46,12 @@ relationships:
   # Inbound to RAVEN portal: only control can wake RAVEN for now.
   - from: control
     to: raven.message
+
+  # Inbound to control inbox: raven and edith can notify the control panel.
+  - from: raven
+    to: control.message
+  - from: edith
+    to: control.message
 
   # Inbound to EDITH chat surface.
   - from: control

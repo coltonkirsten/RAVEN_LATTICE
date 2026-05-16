@@ -23,10 +23,23 @@
       <section id="audit" class="panel">
         <h2>
           audit log
+          <label class="audit-filter-toggle" title="Hide control's own polling of core.audit_query">
+            <input type="checkbox" id="audit-filter-polls" />
+            <span>hide audit polling</span>
+          </label>
           <button id="audit-refresh" type="button" class="refresh-btn" title="Refresh audit log">↻</button>
         </h2>
         <ul id="audit-list"></ul>
         <div id="audit-note" class="note"></div>
+      </section>
+
+      <section id="inbox" class="panel">
+        <h2>
+          <span id="inbox-title">inbox</span>
+          <button id="inbox-clear" type="button" class="inbox-clear-btn" title="Clear all inbox messages">clear</button>
+        </h2>
+        <ul id="inbox-list"></ul>
+        <div id="inbox-empty" class="note">no messages</div>
       </section>
 
       <section id="send" class="panel">

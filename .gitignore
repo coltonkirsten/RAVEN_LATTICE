@@ -32,3 +32,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Runtime state (control node inbox persistence)
+nodes/control/inbox.json
+nodes/control/inbox.json.tmp

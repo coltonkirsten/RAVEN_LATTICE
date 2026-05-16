@@ -2,12 +2,20 @@
 
 const POLL_INTROSPECT_MS = 2000;
 const POLL_AUDIT_MS = 2000;
+const POLL_INBOX_MS = 3000;
 const MAX_AUDIT_ENTRIES = 500;
+const FILTERED_CORR_CAP = 1000;
+const FILTER_AUDIT_POLLS_KEY = "lattice_control_filter_audit_polls";
 
 const statusEl = document.getElementById("status");
 const auditListEl = document.getElementById("audit-list");
 const auditNoteEl = document.getElementById("audit-note");
 const auditRefreshBtn = document.getElementById("audit-refresh");
+const auditFilterEl = document.getElementById("audit-filter-polls");
+const inboxListEl = document.getElementById("inbox-list");
+const inboxEmptyEl = document.getElementById("inbox-empty");
+const inboxTitleEl = document.getElementById("inbox-title");
+const inboxClearBtn = document.getElementById("inbox-clear");
 const sendToEl = document.getElementById("send-to");
 const sendForm = document.getElementById("send-form");
 const sendPayloadEl = document.getElementById("send-payload");
@@ -62,6 +70,39 @@ let lastNodeIds = new Set();
 let lastEdgeKeys = new Set();
 let seenAuditIds = new Set();
 let currentRelationships = [];
+
+// Track correlation_ids of audit-poll invocations we've filtered out, so we
+// can also filter the paired response rows (from=core, to=control). Bounded
+// to avoid unbounded growth; oldest entries evicted FIFO.
+const filteredCorrIds = new Set();
+const filteredCorrOrder = [];
+
+function rememberFilteredCorr(id) {
+  if (!id || filteredCorrIds.has(id)) return;
+  filteredCorrIds.add(id);
+  filteredCorrOrder.push(id);
+  while (filteredCorrOrder.length > FILTERED_CORR_CAP) {
+    const old = filteredCorrOrder.shift();
+    filteredCorrIds.delete(old);
+  }
+}
+
+function shouldFilterAuditEntry(entry) {
+  if (!auditFilterEl?.checked) return false;
+  const from = entry.from_node;
+  const to = entry.to_surface;
+  const corr = entry.correlation_id;
+  // The poll invocation itself.
+  if (from === "control" && to === "core.audit_query") {
+    rememberFilteredCorr(corr || entry.id);
+    return true;
+  }
+  // The paired response (core -> control), matched by correlation_id.
+  if (from === "core" && to === "control" && corr && filteredCorrIds.has(corr)) {
+    return true;
+  }
+  return false;
+}
 
 function colorForKind(kind, isCore) {
   if (isCore) return { background: "#374151", border: "#6b7280" };
@@ -185,6 +226,7 @@ function renderAuditEntry(entry) {
   const id = entry.id || `${entry.timestamp}-${entry.from_node}-${entry.to_surface}`;
   if (seenAuditIds.has(id)) return null;
   seenAuditIds.add(id);
+  if (shouldFilterAuditEntry(entry)) return null;
   const li = document.createElement("li");
   const ts = (entry.timestamp || "").replace("T", " ").replace("Z", "");
   const route = `${entry.from_node || "?"} → ${entry.to_surface || "?"}`;
@@ -287,7 +329,133 @@ if (auditRefreshBtn) {
   });
 }
 
+function resetAuditList() {
+  seenAuditIds = new Set();
+  filteredCorrIds.clear();
+  filteredCorrOrder.length = 0;
+  auditListEl.innerHTML = "";
+}
+
+if (auditFilterEl) {
+  const stored = localStorage.getItem(FILTER_AUDIT_POLLS_KEY);
+  auditFilterEl.checked = stored === null ? true : stored === "1";
+  auditFilterEl.addEventListener("change", () => {
+    localStorage.setItem(FILTER_AUDIT_POLLS_KEY, auditFilterEl.checked ? "1" : "0");
+    resetAuditList();
+    pollAudit();
+  });
+}
+
+// -------------------------------------------------------------------
+// Inbox
+// -------------------------------------------------------------------
+
+let inboxKnownIds = new Set();
+let inboxFirstLoad = true;
+
+function formatInboxTs(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function renderInbox(entries) {
+  const unread = entries.filter((e) => !e.read).length;
+  inboxTitleEl.innerHTML =
+    `inbox` + (unread > 0 ? ` <span class="unread-badge">${unread}</span>` : "");
+
+  inboxEmptyEl.style.display = entries.length === 0 ? "block" : "none";
+  inboxClearBtn.disabled = entries.length === 0;
+
+  const currentIds = new Set(entries.map((e) => e.id));
+  const newlyArrived = inboxFirstLoad
+    ? new Set()
+    : new Set([...currentIds].filter((id) => !inboxKnownIds.has(id)));
+
+  inboxListEl.innerHTML = "";
+  for (const entry of entries) {
+    const li = document.createElement("li");
+    li.dataset.id = entry.id;
+    if (!entry.read) li.classList.add("unread");
+    if (newlyArrived.has(entry.id)) li.classList.add("flash");
+
+    const text =
+      entry.payload && typeof entry.payload === "object" && typeof entry.payload.text === "string"
+        ? entry.payload.text
+        : null;
+
+    const head = `<div class="inbox-head">` +
+      `<span class="inbox-from">${escapeHtml(entry.from || "?")}</span>` +
+      `<span class="inbox-ts">${escapeHtml(formatInboxTs(entry.received_at))}</span>` +
+      `</div>`;
+
+    let bodyHtml;
+    if (text !== null) {
+      bodyHtml =
+        `<div class="inbox-text">${escapeHtml(text)}</div>` +
+        `<details class="inbox-raw"><summary>raw</summary>` +
+        `<pre>${escapeHtml(JSON.stringify(entry.payload, null, 2))}</pre></details>`;
+    } else {
+      bodyHtml = `<pre class="inbox-raw"><code>${escapeHtml(JSON.stringify(entry.payload, null, 2))}</code></pre>`;
+    }
+
+    li.innerHTML = head + bodyHtml;
+    li.addEventListener("click", (ev) => {
+      // Don't mark-read on clicks inside <details> / <summary> toggles.
+      if (ev.target instanceof Element && ev.target.closest("details, summary, pre")) return;
+      if (entry.read) return;
+      markInboxRead(entry.id, li);
+    });
+    inboxListEl.appendChild(li);
+  }
+
+  inboxKnownIds = currentIds;
+  inboxFirstLoad = false;
+}
+
+async function markInboxRead(id, li) {
+  li.classList.remove("unread");
+  const fromEl = li.querySelector(".inbox-from");
+  if (fromEl) fromEl.style.color = "";
+  try {
+    await fetch(`/api/inbox/${encodeURIComponent(id)}/read`, { method: "POST" });
+  } catch (e) {
+    console.error("[inbox] mark-read failed:", e);
+  }
+  pollInbox();
+}
+
+async function pollInbox() {
+  try {
+    const r = await fetch("/api/inbox");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    renderInbox(data.inbox || []);
+  } catch (e) {
+    console.error("[inbox] poll failed:", e.message);
+  }
+}
+
+inboxClearBtn.addEventListener("click", async () => {
+  const count = inboxListEl.childElementCount;
+  if (count === 0) return;
+  if (!confirm(`Clear all ${count} message${count === 1 ? "" : "s"}?`)) return;
+  inboxClearBtn.disabled = true;
+  try {
+    await fetch("/api/inbox/clear", { method: "POST" });
+    inboxFirstLoad = true; // don't flash on next render
+    await pollInbox();
+  } catch (e) {
+    console.error("[inbox] clear failed:", e);
+    inboxClearBtn.disabled = false;
+  }
+});
+
 pollIntrospect();
 pollAudit();
+pollInbox();
 setInterval(pollIntrospect, POLL_INTROSPECT_MS);
 setInterval(pollAudit, POLL_AUDIT_MS);
+setInterval(pollInbox, POLL_INBOX_MS);
