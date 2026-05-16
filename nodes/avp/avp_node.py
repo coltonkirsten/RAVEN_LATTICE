@@ -210,8 +210,54 @@ async def send_response(
 # ---------------------------------------------------------------------------
 # Surface handlers
 # ---------------------------------------------------------------------------
+async def _add_panel_upstream(http: httpx.AsyncClient, panel: dict) -> httpx.Response:
+    """Append a panel to the scene. Tries POST /scene/panel first (newer
+    upstream), falls back to PATCH /scene with a JSON Patch add op
+    (older upstream that predates the /scene/panel POST endpoint)."""
+    r = await http.post("/scene/panel", json=panel)
+    if r.status_code == 404:
+        r = await http.patch(
+            "/scene",
+            json=[{"op": "add", "path": "/panels/-", "value": panel}],
+        )
+    return r
+
+
+async def _merge_panel_upstream(
+    http: httpx.AsyncClient, pid: str, body: dict
+) -> httpx.Response:
+    """Merge a partial update into a panel. Tries POST /scene/panel/{id}
+    first (newer upstream), falls back to PATCH /scene with a JSON Patch
+    replace op against the current panel object (older upstream)."""
+    r = await http.post(f"/scene/panel/{pid}", json=body)
+    if r.status_code != 404:
+        return r
+    # Older upstream: resolve id -> index, fetch the current panel, merge
+    # the patch into it, and replace the whole object.
+    scene = await _get_scene(http)
+    panels = scene.get("panels", [])
+    idx = next((i for i, p in enumerate(panels) if p.get("id") == pid), None)
+    if idx is None:
+        # Return the original 404 — caller will surface it.
+        return r
+    merged = dict(panels[idx])
+    for k, v in body.items():
+        if k == "id":
+            continue
+        if k == "transform" and isinstance(v, dict) and isinstance(merged.get("transform"), dict):
+            merged["transform"] = {**merged["transform"], **v}
+        elif k == "size" and isinstance(v, dict) and isinstance(merged.get("size"), dict):
+            merged["size"] = {**merged["size"], **v}
+        else:
+            merged[k] = v
+    return await http.patch(
+        "/scene",
+        json=[{"op": "replace", "path": f"/panels/{idx}", "value": merged}],
+    )
+
+
 async def handle_show(http: httpx.AsyncClient, env: dict) -> None:
-    """Fire-and-forget: build a panel and POST /scene/panel. No mesh reply."""
+    """Fire-and-forget: build a panel and add it to the scene. No mesh reply."""
     payload = env.get("payload") or {}
     try:
         panel = await _build_panel(http, payload)
@@ -219,7 +265,7 @@ async def handle_show(http: httpx.AsyncClient, env: dict) -> None:
         print(f"[avp] show build_panel failed: {e!r}", file=sys.stderr, flush=True)
         return
     try:
-        r = await http.post("/scene/panel", json=panel)
+        r = await _add_panel_upstream(http, panel)
         if r.status_code >= 400:
             print(
                 f"[avp] show kind={panel['kind']} id={panel['id']} "
@@ -240,7 +286,7 @@ async def handle_add_panel(http: httpx.AsyncClient, env: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": "build_panel_failed", "detail": str(e)}
     try:
-        r = await http.post("/scene/panel", json=panel)
+        r = await _add_panel_upstream(http, panel)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": "http_crash", "detail": str(e)}
     if r.status_code >= 400:
@@ -263,7 +309,7 @@ async def handle_update_panel(http: httpx.AsyncClient, env: dict) -> dict:
     body = dict(patch)
     body["id"] = pid
     try:
-        r = await http.post(f"/scene/panel/{pid}", json=body)
+        r = await _merge_panel_upstream(http, pid, body)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": "http_crash", "detail": str(e)}
     if r.status_code >= 400:
