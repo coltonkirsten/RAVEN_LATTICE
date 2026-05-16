@@ -35,6 +35,14 @@ SURFACE = "edith.chat"
 SECRET = os.environ["EDITH_SECRET"].encode()
 MODEL = os.environ.get("EDITH_MODEL", "claude-sonnet-4-6")
 
+# Mesh MCP: expose this node's outbound edges to the spawned Claude CLI
+# as tools so EDITH can send messages back into the lattice (e.g. to
+# control.message). Gated on EDITH_MCP_ENABLED (default on).
+MCP_ENABLED = os.environ.get("EDITH_MCP_ENABLED", "1") not in ("0", "false", "")
+MCP_SCRIPT = os.environ.get("EDITH_MCP_SCRIPT", "/app/mesh_mcp.py")
+MANIFEST_PATH = os.environ.get("MANIFEST_PATH", "/app/manifest.yaml")
+MCP_CONFIG_PATH = "/tmp/edith_mcp_config.json"
+
 OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
 if not OAUTH_TOKEN:
     print(
@@ -52,7 +60,12 @@ EDITH_PERSONA = (
     "Operate as EDITH — Colton's daily-driver AI agent running on his Mac mini "
     "as a node in the LATTICE mesh. You are concise, capable, and dry-witted "
     "(think JARVIS). Match the user's energy. Respond in plain text suitable "
-    "for display in a chat panel."
+    "for display in a chat panel. You have mesh tools available "
+    "(prefixed `mcp__lattice_mesh__mesh_*`) for sending messages to other "
+    "nodes in the LATTICE mesh (e.g. `mesh_control_message` to notify "
+    "Colton's dashboard). Use them when the user asks you to send, notify, "
+    "or relay a message to another node. Tool returns confirm delivery to "
+    "Core, not the target's reply."
 )
 
 # conversation_id -> claude session_id (returned by CLI on first turn,
@@ -73,6 +86,48 @@ def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _ensure_mcp_config() -> str | None:
+    """Write (idempotently) the MCP config that points the CLI at mesh_mcp.py.
+
+    Returns the config path, or None when MCP is disabled / script missing.
+    Re-writing is cheap and keeps the file in sync if env vars change.
+    """
+    if not MCP_ENABLED:
+        return None
+    if not os.path.exists(MCP_SCRIPT):
+        print(
+            f"[edith] mesh MCP script missing at {MCP_SCRIPT}; skipping --mcp-config",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    cfg = {
+        "mcpServers": {
+            "lattice_mesh": {
+                "command": "python3",
+                "args": [MCP_SCRIPT],
+                "env": {
+                    "MESH_NODE_ID": NODE_ID,
+                    "CORE_URL": CORE_URL,
+                    "MANIFEST_PATH": MANIFEST_PATH,
+                    "EDITH_SECRET": os.environ["EDITH_SECRET"],
+                },
+            }
+        }
+    }
+    try:
+        with open(MCP_CONFIG_PATH, "w") as f:
+            json.dump(cfg, f)
+        return MCP_CONFIG_PATH
+    except Exception as e:  # noqa: BLE001
+        print(
+            f"[edith] failed to write MCP config: {e!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+
+
 async def call_claude(conversation_id: str, user_message: str) -> str:
     """Spawn the claude CLI and return its result text.
 
@@ -89,6 +144,9 @@ async def call_claude(conversation_id: str, user_message: str) -> str:
         "--append-system-prompt", EDITH_PERSONA,
         "--dangerously-skip-permissions",
     ]
+    mcp_cfg = _ensure_mcp_config()
+    if mcp_cfg:
+        args.extend(["--mcp-config", mcp_cfg])
     prior_session = SESSIONS.get(conversation_id)
     if prior_session:
         args.extend(["--resume", prior_session])

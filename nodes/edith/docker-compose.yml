@@ -13,6 +13,13 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CORE_URL=${CORE_URL:-http://host.docker.internal:8000}
       - EDITH_MODEL=${EDITH_MODEL:-claude-sonnet-4-6}
+      # Mesh MCP — exposes EDITH's outbound mesh edges as tools to the
+      # spawned Claude Code CLI. Reads manifest at /app/manifest.yaml.
+      - EDITH_MCP_ENABLED=${EDITH_MCP_ENABLED:-1}
+      - MANIFEST_PATH=/app/manifest.yaml
+    volumes:
+      # Read-only manifest mount so mesh_mcp.py can hot-reload edges.
+      - ../../manifest.yaml:/app/manifest.yaml:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     network_mode: bridge

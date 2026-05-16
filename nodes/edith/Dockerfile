@@ -17,6 +17,7 @@ COPY requirements.txt .
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 COPY edith.py .
+COPY mesh_mcp.py .
 
 # Run as a dedicated edith user (non-root, isolated from nexus-cell's
 # "agent" user) — needs HOME writable for the claude CLI config dir.
