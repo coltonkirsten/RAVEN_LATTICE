@@ -139,6 +139,7 @@ nodes:
       description: "RAVEN_AVP voice-control proxy. Translates mesh envelopes into HTTPX calls to the visionOS voice-control HTTP server (100.109.10.50:5181). Runs on Mac mini."
       host: mac-mini
     surfaces:
+      # Existing tool surfaces.
       - name: status
         type: tool
         invocation_mode: request_response
@@ -150,6 +151,42 @@ nodes:
       - name: stop_session
         type: tool
         invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      # session_status — alias for status (parity with voice.py — some callers use this name).
+      - name: session_status
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      # Operator hot-tuning of the avp_voice node's system prompt.
+      # get_system_message returns the fully resolved instructions string
+      # (built dynamically from mesh tools + scene snapshot + operator override).
+      # set replaces the operator override and persists it to disk so it
+      # survives restart. Takes effect on the NEXT session (in-flight sessions
+      # keep their original instructions until restart).
+      - name: get_system_message
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: set_system_message
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      # scene_snapshot — compact LLM-friendly summary of the current AVP scene.
+      # Returns {panels: [{id, kind, text_preview, url, has_data}], count, version}.
+      - name: scene_snapshot
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      # Inbox surfaces (fire_and_forget). speak=verbatim, tell=conversational.
+      # Forwarded to the visionOS app via /voice/inject so the active session
+      # can play them.
+      - name: speak
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
+      - name: tell
+        type: inbox
+        invocation_mode: fire_and_forget
         schema: shared/schemas/permissive.json
 
 relationships:
@@ -332,3 +369,54 @@ relationships:
     to: avp_voice.start_session
   - from: control
     to: avp_voice.stop_session
+
+  # avp_voice outbound — gpt-realtime model inside an active Vision Pro voice
+  # session can call these as Realtime function tools. Discovered via
+  # /v0/introspect (edges where from == avp_voice) and surfaced to the model.
+  - from: avp_voice
+    to: avp.list_panels
+  - from: avp_voice
+    to: avp.add_panel
+  - from: avp_voice
+    to: avp.show
+  - from: avp_voice
+    to: avp.remove_panel
+  - from: avp_voice
+    to: avp.update_panel
+  - from: avp_voice
+    to: avp.clear_scene
+  - from: avp_voice
+    to: raven.message
+  - from: avp_voice
+    to: edith.chat
+  - from: avp_voice
+    to: control.message
+  - from: avp_voice
+    to: browser.query
+
+  # Inbound to avp_voice's new surfaces — peers can push system-message
+  # overrides, query scene snapshot, and inject speak/tell into the session.
+  - from: raven
+    to: avp_voice.session_status
+  - from: raven
+    to: avp_voice.get_system_message
+  - from: raven
+    to: avp_voice.set_system_message
+  - from: edith
+    to: avp_voice.set_system_message
+  - from: control
+    to: avp_voice.set_system_message
+  - from: raven
+    to: avp_voice.scene_snapshot
+  - from: edith
+    to: avp_voice.scene_snapshot
+  - from: raven
+    to: avp_voice.speak
+  - from: edith
+    to: avp_voice.speak
+  - from: raven
+    to: avp_voice.tell
+  - from: edith
+    to: avp_voice.tell
+  - from: control
+    to: avp_voice.tell
