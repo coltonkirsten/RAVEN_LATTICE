@@ -1,0 +1,4 @@
+# Operator state — written at runtime by set_system_message, mounted into
+# the container at /data. Never commit per-host overrides.
+data/
+__pycache__/

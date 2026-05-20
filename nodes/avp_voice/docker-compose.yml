@@ -8,10 +8,27 @@ services:
     environment:
       - AVP_VOICE_SECRET=${AVP_VOICE_SECRET:?AVP_VOICE_SECRET must be set in ../../hosts/mac-mini/.env}
       - CORE_URL=${CORE_URL:-http://host.docker.internal:8000}
-      # AVP_VOICE_BASE_URL — the visionOS voice-control HTTP server on
-      # the Vision Pro. Default is the Tailscale IP so this works
-      # regardless of host-bridge resolution.
+      # AVP_VOICE_BASE_URL — the visionOS voice-control HTTP server on the
+      # Vision Pro. Default is the Tailscale IP so this works regardless
+      # of host-bridge resolution.
       - AVP_VOICE_BASE_URL=${AVP_VOICE_BASE_URL:-http://100.109.10.50:5181}
+      # AVP_SCENE_URL — FastAPI scene server on the Mac mini. Used at
+      # start_session time to compose the current-scene block of the
+      # Realtime instructions, and by scene_snapshot for live polling.
+      - AVP_SCENE_URL=${AVP_SCENE_URL:-http://host.docker.internal:5180}
+      # AVP_VOICE_CALLBACK_URL — what the visionOS app POSTs tool_calls
+      # back to. Tailscale IP of the Mac mini on the back-channel port.
+      - AVP_VOICE_CALLBACK_URL=${AVP_VOICE_CALLBACK_URL:-http://100.109.10.50:5182}
+      - AVP_VOICE_CALLBACK_PORT=${AVP_VOICE_CALLBACK_PORT:-5182}
+    ports:
+      # Back-channel HTTP listener — the visionOS VoiceSession POSTs every
+      # Realtime function_call here so we can resolve tool names to mesh
+      # edges and return the ack synchronously to the device.
+      - "5182:5182"
+    volumes:
+      # Persisted operator override for the system prompt (set via
+      # avp_voice.set_system_message). Survives container restart.
+      - ./data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     network_mode: bridge

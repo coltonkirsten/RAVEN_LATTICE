@@ -12,8 +12,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY avp_voice_node.py .
 
-RUN useradd -m -u 1501 avpvoice && chown -R avpvoice /app
+# /data holds the persisted system-prompt override (mounted from the host
+# in docker-compose.yml). Pre-create it with the right owner so the
+# unprivileged avpvoice user can write the override file on first set.
+RUN useradd -m -u 1501 avpvoice \
+    && mkdir -p /data \
+    && chown -R avpvoice /app /data
 USER avpvoice
+
+EXPOSE 5182
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD grep -q avp_voice_node.py /proc/1/cmdline || exit 1
