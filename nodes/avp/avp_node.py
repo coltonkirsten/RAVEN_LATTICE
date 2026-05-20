@@ -6,19 +6,26 @@ running on Colton's Mac at AVP_BASE_URL (default
 http://100.109.10.50:5180 — Tailscale-reachable from the Mac mini).
 
 Surfaces:
-  avp.show          (inbox,  fire_and_forget) — 80% surface. "Put this on
-                    screen near X." Builds a panel from the payload and
-                    POSTs /scene/panel. No reply.
-  avp.add_panel     (tool,   request_response) — like show, but replies
-                    {ok, panel}. Use when caller needs the new id.
-  avp.update_panel  (tool,   request_response) — POST /scene/panel/{id}
-                    with the merge body.
-  avp.remove_panel  (tool,   request_response) — PATCH /scene with a
-                    JSON Patch remove op (index resolved server-side).
-  avp.list_panels   (tool,   request_response) — GET /scene, return the
-                    short form [{id, kind, position, size}, …].
-  avp.clear_scene   (tool,   request_response) — PATCH /scene replacing
-                    /panels with [].
+  avp.show           (inbox,  fire_and_forget) — 80% surface. "Put this on
+                     screen near X." Builds a panel from the payload and
+                     POSTs /scene/panel. No reply.
+  avp.add_panel      (tool,   request_response) — like show, but replies
+                     {ok, panel}. Use when caller needs the new id.
+  avp.update_panel   (tool,   request_response) — POST /scene/panel/{id}
+                     with the merge body.
+  avp.remove_panel   (tool,   request_response) — PATCH /scene with a
+                     JSON Patch remove op (index resolved server-side).
+  avp.list_panels    (tool,   request_response) — GET /scene, return the
+                     short form [{id, kind, position, size}, …].
+  avp.clear_scene    (tool,   request_response) — PATCH /scene replacing
+                     /panels with [].
+  avp.add_entity     (tool,   request_response) — POST /scene/entity with
+                     the full entity dict.
+  avp.update_entity  (tool,   request_response) — POST /scene/entity/{id}
+                     with the merge body.
+  avp.remove_entity  (tool,   request_response) — DELETE /scene/entity/{id}.
+  avp.list_entities  (tool,   request_response) — GET /scene, return
+                     short-form entity summaries.
 
 The FastAPI server is canonical; this node holds no scene state.
 """
@@ -95,33 +102,50 @@ async def _get_scene(http: httpx.AsyncClient) -> dict:
     return r.json()
 
 
+def _coerce_xyz(v) -> list[float]:
+    """Accept [x,y,z], {"x":..,"y":..,"z":..}, or {"position":[x,y,z]}.
+
+    Models occasionally echo back whatever shape list_panels/list_entities
+    returned (dicts) instead of the [x,y,z] list the FastAPI server wants.
+    Normalise here so the caller doesn't get a KeyError(0).
+    """
+    if isinstance(v, dict):
+        if "position" in v and isinstance(v["position"], (list, tuple)):
+            v = v["position"]
+        else:
+            return [float(v["x"]), float(v["y"]), float(v["z"])]
+    return [float(v[0]), float(v[1]), float(v[2])]
+
+
 async def _resolve_position(
     http: httpx.AsyncClient,
-    position: list[float] | None,
+    position,
     near: str | None,
-    near_offset: list[float] | None,
+    near_offset,
 ) -> tuple[list[float], list[float]]:
     if position is not None:
-        return [float(v) for v in position], [0.0, 0.0, 0.0]
+        return _coerce_xyz(position), [0.0, 0.0, 0.0]
     if near is not None:
         scene = await _get_scene(http)
         target = next((p for p in scene.get("panels", []) if p.get("id") == near), None)
         if target is None:
             raise ValueError(f"near: panel {near!r} not found")
-        offset = near_offset if near_offset is not None else DEFAULT_NEAR_OFFSET
+        offset = _coerce_xyz(near_offset) if near_offset is not None else list(DEFAULT_NEAR_OFFSET)
         tp = target["transform"]["position"]
         rot = target["transform"]["rotation"]
         return (
-            [float(tp[0]) + float(offset[0]),
-             float(tp[1]) + float(offset[1]),
-             float(tp[2]) + float(offset[2])],
+            [float(tp[0]) + offset[0],
+             float(tp[1]) + offset[1],
+             float(tp[2]) + offset[2]],
             [float(v) for v in rot],
         )
     return list(DEFAULT_POSITION), [0.0, 0.0, 0.0]
 
 
-def _size_or_default(kind: str, size: list[float] | None) -> dict:
+def _size_or_default(kind: str, size) -> dict:
     if size is not None:
+        if isinstance(size, dict):
+            return {"width": float(size["width"]), "height": float(size["height"])}
         return {"width": float(size[0]), "height": float(size[1])}
     w, h = DEFAULT_SIZES.get(kind, (0.5, 0.4))
     return {"width": w, "height": h}
@@ -194,6 +218,29 @@ def _short(panel: dict) -> dict:
         val = panel.get(content_field)
         if isinstance(val, str) and val:
             out["preview"] = val[:PREVIEW_MAX] + ("…" if len(val) > PREVIEW_MAX else "")
+    return out
+
+
+def _short_entity(entity: dict) -> dict:
+    """Compact summary for list_entities — strip heavy fields to keep the
+    response small even on scenes with many large entities. Full entity
+    dicts are still available via GET /scene if a caller needs them."""
+    PREVIEW_MAX = 120
+    geom = entity.get("geometry") or {}
+    out: dict = {
+        "id": entity.get("id"),
+        "kind": geom.get("kind") if isinstance(geom, dict) else None,
+        "position": (entity.get("transform") or {}).get("position"),
+        "parent_id": entity.get("parent_id"),
+    }
+    if entity.get("cluster_id") is not None:
+        out["cluster_id"] = entity["cluster_id"]
+    label = entity.get("label")
+    if isinstance(label, str) and label:
+        out["label"] = label[:PREVIEW_MAX] + ("…" if len(label) > PREVIEW_MAX else "")
+    text = entity.get("text")
+    if isinstance(text, str) and text:
+        out["text"] = text[:PREVIEW_MAX] + ("…" if len(text) > PREVIEW_MAX else "")
     return out
 
 
@@ -392,6 +439,78 @@ async def handle_clear_scene(http: httpx.AsyncClient, env: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Entity surfaces — thin proxies over the scene server's /scene/entity routes.
+# The scene server's pydantic validation is canonical; we relay whatever the
+# caller sent and pass the upstream's error detail back on 4xx/5xx.
+# ---------------------------------------------------------------------------
+async def handle_add_entity(http: httpx.AsyncClient, env: dict) -> dict:
+    payload = env.get("payload") or {}
+    if not isinstance(payload, dict) or not payload.get("id"):
+        return {"ok": False, "error": "missing_id"}
+    try:
+        r = await http.post("/scene/entity", json=payload)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "http_crash", "detail": str(e)}
+    if r.status_code >= 400:
+        return {"ok": False, "error": "upstream_error",
+                "status": r.status_code, "detail": r.text[:500]}
+    return {"ok": True, "id": payload.get("id"),
+            "kind": (payload.get("geometry") or {}).get("kind") if isinstance(payload.get("geometry"), dict) else payload.get("kind")}
+
+
+async def handle_update_entity(http: httpx.AsyncClient, env: dict) -> dict:
+    payload = env.get("payload") or {}
+    eid = payload.get("id")
+    if not eid:
+        return {"ok": False, "error": "missing_id"}
+    patch = payload.get("patch")
+    if patch is None:
+        patch = {k: v for k, v in payload.items() if k != "id"}
+    if not isinstance(patch, dict):
+        return {"ok": False, "error": "patch_must_be_object"}
+    body = {k: v for k, v in patch.items() if k != "id"}
+    try:
+        r = await http.post(f"/scene/entity/{eid}", json=body)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "http_crash", "detail": str(e)}
+    if r.status_code == 404:
+        return {"ok": False, "error": "not_found", "id": eid,
+                "status": 404, "detail": r.text[:500]}
+    if r.status_code >= 400:
+        return {"ok": False, "error": "upstream_error",
+                "status": r.status_code, "detail": r.text[:500]}
+    return {"ok": True, "id": eid}
+
+
+async def handle_remove_entity(http: httpx.AsyncClient, env: dict) -> dict:
+    payload = env.get("payload") or {}
+    eid = payload.get("id")
+    if not eid:
+        return {"ok": False, "error": "missing_id"}
+    try:
+        r = await http.delete(f"/scene/entity/{eid}")
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "http_crash", "detail": str(e)}
+    if r.status_code == 404:
+        return {"ok": False, "error": "not_found", "id": eid,
+                "status": 404, "detail": r.text[:500]}
+    if r.status_code >= 400:
+        return {"ok": False, "error": "upstream_error",
+                "status": r.status_code, "detail": r.text[:500]}
+    return {"ok": True, "id": eid}
+
+
+async def handle_list_entities(http: httpx.AsyncClient, env: dict) -> dict:
+    try:
+        scene = await _get_scene(http)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "get_scene_failed", "detail": str(e)}
+    entities = [_short_entity(e) for e in scene.get("entities", [])]
+    return {"ok": True, "entities": entities,
+            "version": scene.get("version"), "seq": scene.get("seq")}
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 async def dispatch(
@@ -414,6 +533,14 @@ async def dispatch(
         result = await handle_list_panels(http, env)
     elif surface == "clear_scene":
         result = await handle_clear_scene(http, env)
+    elif surface == "add_entity":
+        result = await handle_add_entity(http, env)
+    elif surface == "update_entity":
+        result = await handle_update_entity(http, env)
+    elif surface == "remove_entity":
+        result = await handle_remove_entity(http, env)
+    elif surface == "list_entities":
+        result = await handle_list_entities(http, env)
     else:
         print(f"[avp] dispatch: unknown surface {surface!r}", file=sys.stderr, flush=True)
         return

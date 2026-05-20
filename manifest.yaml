@@ -117,6 +117,26 @@ nodes:
         type: tool
         invocation_mode: request_response
         schema: shared/schemas/permissive.json
+      # Entity surfaces — mirror panel CRUD against /scene/entity routes.
+      # Entities are richer than panels (geometry, material, gestures,
+      # parent_id, cluster_id, label, etc.); the scene server's pydantic
+      # validation is canonical, this node is a thin pass-through.
+      - name: add_entity
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: update_entity
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: remove_entity
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: list_entities
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
 
   - id: browser
     kind: capability
@@ -300,6 +320,14 @@ relationships:
     to: avp.list_panels
   - from: raven
     to: avp.clear_scene
+  - from: raven
+    to: avp.add_entity
+  - from: raven
+    to: avp.update_entity
+  - from: raven
+    to: avp.remove_entity
+  - from: raven
+    to: avp.list_entities
 
   - from: edith
     to: avp.show
@@ -313,6 +341,14 @@ relationships:
     to: avp.list_panels
   - from: edith
     to: avp.clear_scene
+  - from: edith
+    to: avp.add_entity
+  - from: edith
+    to: avp.update_entity
+  - from: edith
+    to: avp.remove_entity
+  - from: edith
+    to: avp.list_entities
 
   - from: voice
     to: avp.show
@@ -322,6 +358,14 @@ relationships:
     to: avp.remove_panel
   - from: voice
     to: avp.list_panels
+  - from: voice
+    to: avp.add_entity
+  - from: voice
+    to: avp.update_entity
+  - from: voice
+    to: avp.remove_entity
+  - from: voice
+    to: avp.list_entities
 
   # avp reaches back to RAVEN to notify of out-of-band scene events
   # (e.g. panel deleted by the user). Optional but useful.
@@ -385,6 +429,14 @@ relationships:
     to: avp.update_panel
   - from: avp_voice
     to: avp.clear_scene
+  - from: avp_voice
+    to: avp.add_entity
+  - from: avp_voice
+    to: avp.update_entity
+  - from: avp_voice
+    to: avp.remove_entity
+  - from: avp_voice
+    to: avp.list_entities
   - from: avp_voice
     to: raven.message
   - from: avp_voice
