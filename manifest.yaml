@@ -101,6 +101,13 @@ nodes:
         type: tool
         invocation_mode: request_response
         schema: shared/schemas/permissive.json
+        purpose: |
+          Add a 2D panel to the AVP scene. Supported kinds: markdown,
+          mermaid, chart, model3d, image, html. Pass {kind, ...kind-specific
+          fields} (e.g. markdown takes `text`, mermaid takes `text` with
+          diagram source, chart takes `data`, image takes `url`). Returns
+          the created panel. Panels are SEPARATE from entities — they have
+          their own ID namespace and rendering pipeline.
       - name: update_panel
         type: tool
         invocation_mode: request_response
@@ -125,18 +132,34 @@ nodes:
         type: tool
         invocation_mode: request_response
         schema: shared/schemas/permissive.json
+        purpose: |
+          Add a 3D hologram entity (sphere, cube, line, wireframe, etc.)
+          to the AVP scene. Pass {kind, position, ...kind-specific fields}.
+          Returns the created entity. Entities are SEPARATE from panels —
+          they have their own ID namespace and rendering pipeline.
       - name: update_entity
         type: tool
         invocation_mode: request_response
         schema: shared/schemas/permissive.json
+        purpose: |
+          Modify an existing entity by id. Pass {id, patch:{...}} where
+          patch merges into the entity. Use for moving holograms, changing
+          colors, resizing wireframes, etc.
       - name: remove_entity
         type: tool
         invocation_mode: request_response
         schema: shared/schemas/permissive.json
+        purpose: |
+          Remove an entity by id. Returns 404 if id is wrong. Use list_entities
+          to verify before removing if uncertain.
       - name: list_entities
         type: tool
         invocation_mode: request_response
         schema: shared/schemas/permissive.json
+        purpose: |
+          Query the current entity inventory. Returns array of compact entity
+          summaries (id, kind, position, key geometry fields). Use when Colton
+          asks what holograms are in the scene or before modifying/removing one.
 
   - id: browser
     kind: capability
