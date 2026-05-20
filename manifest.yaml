@@ -160,6 +160,14 @@ nodes:
           Query the current entity inventory. Returns array of compact entity
           summaries (id, kind, position, key geometry fields). Use when Colton
           asks what holograms are in the scene or before modifying/removing one.
+      - name: screenshot
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+        purpose: |
+          Capture a screenshot of the current AVP scene. Returns
+          {path, size_bytes, format} — file persisted on the avp node's
+          filesystem. Use to see what Colton is looking at.
 
   - id: browser
     kind: capability
@@ -351,6 +359,8 @@ relationships:
     to: avp.remove_entity
   - from: raven
     to: avp.list_entities
+  - from: raven
+    to: avp.screenshot
 
   - from: edith
     to: avp.show
@@ -372,6 +382,8 @@ relationships:
     to: avp.remove_entity
   - from: edith
     to: avp.list_entities
+  - from: edith
+    to: avp.screenshot
 
   - from: voice
     to: avp.show
@@ -389,6 +401,8 @@ relationships:
     to: avp.remove_entity
   - from: voice
     to: avp.list_entities
+  - from: voice
+    to: avp.screenshot
 
   # avp reaches back to RAVEN to notify of out-of-band scene events
   # (e.g. panel deleted by the user). Optional but useful.
@@ -460,6 +474,8 @@ relationships:
     to: avp.remove_entity
   - from: avp_voice
     to: avp.list_entities
+  - from: avp_voice
+    to: avp.screenshot
   - from: avp_voice
     to: raven.message
   - from: avp_voice

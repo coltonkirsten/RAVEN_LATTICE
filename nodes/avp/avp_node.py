@@ -26,6 +26,10 @@ Surfaces:
   avp.remove_entity  (tool,   request_response) — DELETE /scene/entity/{id}.
   avp.list_entities  (tool,   request_response) — GET /scene, return
                      short-form entity summaries.
+  avp.screenshot     (tool,   request_response) — GET /voice/screenshot,
+                     persist PNG to /data/screenshots/, notify
+                     raven.message with the path. Returns
+                     {ok, path, size_bytes, format}.
 
 The FastAPI server is canonical; this node holds no scene state.
 """
@@ -510,6 +514,115 @@ async def handle_list_entities(http: httpx.AsyncClient, env: dict) -> dict:
             "version": scene.get("version"), "seq": scene.get("seq")}
 
 
+SCREENSHOT_DIR = os.environ.get("AVP_SCREENSHOT_DIR", "/data/screenshots")
+
+
+async def handle_screenshot(
+    mesh: aiohttp.ClientSession,
+    http: httpx.AsyncClient,
+    env: dict,
+) -> dict:
+    """Request a PNG screenshot from the AVP device, persist it locally,
+    and notify raven.message with the filesystem path so RAVEN can decide
+    what to do with it (e.g. iMessage it to Colton). Returns
+    {ok, path, size_bytes, format} on success."""
+    import base64
+    import time
+
+    try:
+        r = await http.get("/voice/screenshot", timeout=10.0)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "http_crash", "detail": str(e)}
+    if r.status_code >= 400:
+        return {"ok": False, "error": "upstream_error",
+                "status": r.status_code, "detail": r.text[:500]}
+    try:
+        body = r.json()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "bad_response", "detail": str(e)}
+    if not body.get("ok"):
+        return {"ok": False, "error": "device_error", "detail": body}
+    b64 = body.get("data_base64")
+    if not isinstance(b64, str) or not b64:
+        return {"ok": False, "error": "missing_data_base64"}
+    try:
+        png_bytes = base64.b64decode(b64)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "bad_base64", "detail": str(e)}
+
+    try:
+        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "mkdir_failed", "detail": str(e)}
+    ts = int(time.time() * 1000)
+    out_path = f"{SCREENSHOT_DIR}/avp_{ts}.png"
+    try:
+        with open(out_path, "wb") as f:
+            f.write(png_bytes)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": "write_failed", "detail": str(e)}
+
+    result = {
+        "ok": True,
+        "path": out_path,
+        "size_bytes": len(png_bytes),
+        "format": body.get("format", "png"),
+    }
+    if body.get("source"):
+        result["source"] = body["source"]
+    if body.get("note"):
+        result["note"] = body["note"]
+
+    # Fire-and-forget notification to RAVEN's inbox so it can decide whether
+    # to send the file to Colton (e.g. via iMessage) or save it elsewhere.
+    notify_payload = {
+        "kind": "avp_screenshot",
+        "path": out_path,
+        "size_bytes": len(png_bytes),
+        "format": result["format"],
+        "source_caller": env.get("from"),
+    }
+    if body.get("note"):
+        notify_payload["note"] = body["note"]
+    try:
+        await mesh_invoke(mesh, to="raven.message", payload=notify_payload)
+    except Exception as e:  # noqa: BLE001
+        print(f"[avp] screenshot notify crash: {e!r}", file=sys.stderr, flush=True)
+
+    return result
+
+
+async def mesh_invoke(
+    session: aiohttp.ClientSession,
+    *,
+    to: str,
+    payload: dict,
+) -> None:
+    """Fire-and-forget invocation to a peer inbox (e.g. raven.message)."""
+    msg_id = str(uuid.uuid4())
+    env = {
+        "id": msg_id,
+        "correlation_id": msg_id,
+        "from": NODE_ID,
+        "to": to,
+        "kind": "invocation",
+        "payload": payload,
+        "timestamp": now_iso(),
+    }
+    env["signature"] = sign(env)
+    try:
+        async with session.post(f"{CORE_URL}/v0/invoke", json=env) as r:
+            if r.status not in (200, 202):
+                body = await r.text()
+                print(
+                    f"[avp] mesh_invoke to={to} failed: {r.status} {body[:200]}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+    except Exception as e:  # noqa: BLE001
+        print(f"[avp] mesh_invoke to={to} crash: {e!r}", file=sys.stderr, flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -541,6 +654,8 @@ async def dispatch(
         result = await handle_remove_entity(http, env)
     elif surface == "list_entities":
         result = await handle_list_entities(http, env)
+    elif surface == "screenshot":
+        result = await handle_screenshot(mesh, http, env)
     else:
         print(f"[avp] dispatch: unknown surface {surface!r}", file=sys.stderr, flush=True)
         return
