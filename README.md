@@ -1,8 +1,10 @@
-# LATTICE
+# RAVEN_LATTICE
 
 **Layered Agentic Topology with Typed Interactive Channels & Edges**
 
-An opinionated daily-driver AI mesh built on top of the [RAVEN_MESH](https://github.com/coltonkirsten/RAVEN_MESH) protocol. RAVEN_MESH gives us the wire format, identity, routing, and audit. LATTICE adds the actual nodes Colton uses every day: Claude-backed agents, a control panel, and host-specific bootstrap scripts.
+*(formerly LATTICE)*
+
+An opinionated daily-driver AI mesh built on top of the [Lattice](https://github.com/coltonkirsten/Lattice) protocol. Lattice gives us the wire format, identity, routing, and audit. RAVEN_LATTICE adds the actual nodes Colton uses every day: Claude-backed agents, a control panel, and host-specific bootstrap scripts.
 
 ## Status
 
