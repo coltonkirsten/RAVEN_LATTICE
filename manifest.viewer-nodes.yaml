@@ -1,0 +1,159 @@
+# manifest.viewer-nodes.yaml — Wave 4 viewer-node splice fragment.
+#
+# NOT YET SPLICED INTO THE LIVE manifest.yaml. This file holds the three new
+# viewer nodes (viewer_desktop, viewer_spatial, viewer_session) and their
+# relationship edges, ready for the principal to paste into manifest.yaml.
+#
+# TO GO LIVE (see /tmp/w4_manifest_validate_summary.md for the full runbook):
+#   1. Add three secrets to hosts/mac-mini/.env:
+#        VIEWER_DESKTOP_SECRET, VIEWER_SPATIAL_SECRET, VIEWER_SESSION_SECRET
+#   2. Paste the three node blocks below into the `nodes:` list of manifest.yaml
+#      (anywhere before the `relationships:` key — append after `avp_voice`).
+#   3. Paste the relationship edges below at the end of the `relationships:` list.
+#   4. raven -> core.reload_manifest
+#
+# Surface lists are copied verbatim from each node's own manifest fragment:
+#   viewer-desktop/electron/main/services/viewer-node.manifest.json
+#   viewer-spatial/server/viewer-node.manifest.json
+#   viewer-core/session/viewer-session.manifest.json
+# Schema is pinned to shared/schemas/permissive.json (same as every live node);
+# the per-surface payload schemas in the node repos are validated by the nodes
+# themselves and are not reachable relative to the LATTICE manifest dir.
+
+# ============================== NODE BLOCKS ==============================
+# Paste into the `nodes:` list.
+
+  - id: viewer_desktop
+    kind: actor
+    runtime: native
+    identity_secret: env:VIEWER_DESKTOP_SECRET
+    metadata:
+      description: "macOS / Electron viewer shell. Hosts the five shared viewer surfaces (open_view, close_view, focus_view, list_views, notify) inside the Electron main process and translates each into renderer control actions (window open/close/focus + osascript toast). Identical surface set to viewer_spatial so an agent drives either shell the same way."
+      host: coltons-mac
+    surfaces:
+      - name: open_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: close_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: focus_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: list_views
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: notify
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
+
+  - id: viewer_spatial
+    kind: actor
+    runtime: native
+    identity_secret: env:VIEWER_SPATIAL_SECRET
+    metadata:
+      description: "visionOS / Apple Vision Pro viewer shell. Hosts the five shared viewer surfaces (open_view, close_view, focus_view, list_views, notify) in a Python bridge and translates each into the RAVEN_AVP scene server's HTTP endpoints (html panels on coltons-mac:5180). Identical surface set to viewer_desktop so an agent drives either shell the same way."
+      host: mac-mini
+    surfaces:
+      - name: open_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: close_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: focus_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: list_views
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: notify
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
+
+  - id: viewer_session
+    kind: actor
+    runtime: native
+    identity_secret: env:VIEWER_SESSION_SECRET
+    metadata:
+      description: "Viewer session-state node. Holds the shared cross-shell view session (which views are open, focus, layout) and exposes session_get/set/add/remove plus session_handoff, which migrates the active session between viewer_desktop and viewer_spatial by opening/focusing views on the target shell."
+      host: mac-mini
+    surfaces:
+      - name: session_get
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: session_set
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: session_add
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: session_remove
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: session_handoff
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+
+# ============================== RELATIONSHIP EDGES ==============================
+# Paste into the `relationships:` list.
+
+  # raven (orchestrator) drives all three viewer nodes.
+  - from: raven
+    to: viewer_desktop.open_view
+  - from: raven
+    to: viewer_desktop.close_view
+  - from: raven
+    to: viewer_desktop.focus_view
+  - from: raven
+    to: viewer_desktop.list_views
+  - from: raven
+    to: viewer_desktop.notify
+
+  - from: raven
+    to: viewer_spatial.open_view
+  - from: raven
+    to: viewer_spatial.close_view
+  - from: raven
+    to: viewer_spatial.focus_view
+  - from: raven
+    to: viewer_spatial.list_views
+  - from: raven
+    to: viewer_spatial.notify
+
+  - from: raven
+    to: viewer_session.session_get
+  - from: raven
+    to: viewer_session.session_set
+  - from: raven
+    to: viewer_session.session_add
+  - from: raven
+    to: viewer_session.session_remove
+  - from: raven
+    to: viewer_session.session_handoff
+
+  # viewer_session.session_handoff migrates the active session between shells:
+  # it opens + focuses the views on the target viewer shell.
+  - from: viewer_session
+    to: viewer_desktop.open_view
+  - from: viewer_session
+    to: viewer_desktop.focus_view
+  - from: viewer_session
+    to: viewer_spatial.open_view
+  - from: viewer_session
+    to: viewer_spatial.focus_view
