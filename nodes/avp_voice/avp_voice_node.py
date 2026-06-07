@@ -74,9 +74,13 @@ CONNECT_TIMEOUT = 5.0
 READ_TIMEOUT = 15.0
 
 # Persisted operator override for the system prompt — survives container
-# restart so set_system_message tweaks aren't lost on bounce. The /data
-# directory is bind-mounted from the host in docker-compose.yml.
-SYSTEM_OVERRIDE_PATH = pathlib.Path("/data/avp_voice_system_override.txt")
+# restart so set_system_message tweaks aren't lost on bounce. In Docker the
+# /data directory is bind-mounted from the host (docker-compose.yml). When
+# the node runs directly on the host, set AVP_VOICE_DATA_DIR to the real
+# data dir so the Friday persona override is found and writable.
+SYSTEM_OVERRIDE_PATH = pathlib.Path(
+    os.environ.get("AVP_VOICE_DATA_DIR", "/data")
+) / "avp_voice_system_override.txt"
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +363,11 @@ def build_instructions(
         "  1. Default to conversation. Only call a tool when Colton is "
         "     asking for an action or info that requires a node — not "
         "     when he's thinking out loud or asking you to clarify.",
-        "  2. At most ONE tool per user turn. Pick the best target.",
+        "  2. Call as many tools as the request needs. If Colton asks for "
+        "     several things, or a task requires multiple steps, emit ALL "
+        "     the needed tool calls in the same turn — they dispatch in "
+        "     parallel and you get every result back together. Don't "
+        "     artificially limit yourself to one.",
         "  3. After a tool call, give a one-line spoken summary of what "
         "     you dispatched. Don't read the full payload back.",
         "  4. Don't fabricate results. Inbox handoffs are fire-and-forget "

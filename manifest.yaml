@@ -240,6 +240,110 @@ nodes:
         invocation_mode: fire_and_forget
         schema: shared/schemas/permissive.json
 
+  # viewer_desktop — macOS / Electron viewer shell (runs on coltons-mac).
+  # Spliced 2026-06-06. Five shared viewer surfaces; identity_secret autogenerates
+  # to sha256("mesh:viewer_desktop:autogen") when env var is unset.
+  - id: viewer_desktop
+    kind: actor
+    runtime: native
+    identity_secret: env:VIEWER_DESKTOP_SECRET
+    metadata:
+      description: "macOS / Electron viewer shell. Hosts the five shared viewer surfaces (open_view, close_view, focus_view, list_views, notify) inside the Electron main process and translates each into renderer control actions (window open/close/focus + osascript toast). Identical surface set to viewer_spatial so an agent drives either shell the same way."
+      host: coltons-mac
+    surfaces:
+      - name: open_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: close_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: focus_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: list_views
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      # Full-scene surfaces (added 2026-06-06). Where the view surfaces operate
+      # only on views this node painted, these operate on the ENTIRE scene —
+      # every window in every workspace regardless of who opened it (user, this
+      # node, or another agent) — giving an agent full-scene visibility/control.
+      - name: list_windows
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: close_window
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: focus_window
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: notify
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
+      # Generator surfaces (added 2026-06-06). run_generator resolves a slug in
+      # the shared @viewer/core registry, runs it to a View[], and opens each via
+      # the same open_view seam. list_generators reflects the registry.
+      - name: run_generator
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: list_generators
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+
+  # viewer_spatial — visionOS / RAVEN_AVP spatial viewer shell (runs on coltons-mac).
+  # Spliced 2026-06-06. Identical 8-surface set to viewer_desktop so an agent drives
+  # either shell the same way. identity_secret reads VIEWER_SPATIAL_SECRET from .env;
+  # autogenerates to sha256("mesh:viewer_spatial:autogen") when env var is unset.
+  - id: viewer_spatial
+    kind: actor
+    runtime: local-process
+    identity_secret: env:VIEWER_SPATIAL_SECRET
+    metadata:
+      description: "visionOS / RAVEN_AVP spatial viewer shell. Hosts the same eight shared viewer surfaces as viewer_desktop (open_view, close_view, focus_view, list_views, list_windows, close_window, focus_window, notify) plus generator surfaces, translating each into spatial scene operations on the headset via the scene server. Surface-identical to viewer_desktop so an agent drives either shell the same way."
+      host: coltons-mac
+    surfaces:
+      - name: open_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: close_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: focus_view
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: list_views
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: list_windows
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: close_window
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: focus_window
+        type: tool
+        invocation_mode: request_response
+        schema: shared/schemas/permissive.json
+      - name: notify
+        type: inbox
+        invocation_mode: fire_and_forget
+        schema: shared/schemas/permissive.json
+
 relationships:
   # Inbound to RAVEN portal.
   - from: control
@@ -511,3 +615,43 @@ relationships:
     to: avp_voice.tell
   - from: control
     to: avp_voice.tell
+
+  # raven drives the viewer_desktop shell (spliced 2026-06-06).
+  - from: raven
+    to: viewer_desktop.open_view
+  - from: raven
+    to: viewer_desktop.close_view
+  - from: raven
+    to: viewer_desktop.focus_view
+  - from: raven
+    to: viewer_desktop.list_views
+  - from: raven
+    to: viewer_desktop.list_windows
+  - from: raven
+    to: viewer_desktop.close_window
+  - from: raven
+    to: viewer_desktop.focus_window
+  - from: raven
+    to: viewer_desktop.notify
+  - from: raven
+    to: viewer_desktop.run_generator
+  - from: raven
+    to: viewer_desktop.list_generators
+
+  # raven drives the viewer_spatial shell (spliced 2026-06-06).
+  - from: raven
+    to: viewer_spatial.open_view
+  - from: raven
+    to: viewer_spatial.close_view
+  - from: raven
+    to: viewer_spatial.focus_view
+  - from: raven
+    to: viewer_spatial.list_views
+  - from: raven
+    to: viewer_spatial.list_windows
+  - from: raven
+    to: viewer_spatial.close_window
+  - from: raven
+    to: viewer_spatial.focus_window
+  - from: raven
+    to: viewer_spatial.notify

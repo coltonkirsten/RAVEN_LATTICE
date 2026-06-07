@@ -36,3 +36,17 @@ Thumbs.db
 # Runtime state (control node inbox persistence)
 nodes/control/inbox.json
 nodes/control/inbox.json.tmp
+==> /Users/ravennexus/Desktop/Projects/RAVEN_LATTICE <==
+
+==> .gitignore <==
+
+# Secrets - never commit
+secrets/
+
+sprint-videos-full.zip
+
+==> /Users/ravennexus/Desktop/Projects/RAVEN_LATTICE <==
+
+# Local working manifests + splice backups
+manifest.local-test.yaml
+manifest.*.bak
